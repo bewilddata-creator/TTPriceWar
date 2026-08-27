@@ -68,22 +68,21 @@ main{flex:1; padding:24px; display:flex; flex-direction:column; gap:16px;
 /* ---- split ---- */
 .split{display:grid; grid-template-columns:1fr 340px; gap:16px; align-items:start}
 #selectModeCard{grid-column:1/-1}
-.placeholder-note{font-size:14px; color:var(--mut); line-height:1.7}
-.placeholder-note code{background:var(--paper); padding:2px 7px; border-radius:6px;
-  font-family:'IBM Plex Mono',monospace; font-size:13px}
 
 .gridhead{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px}
 .gridscroll{overflow:auto; max-height:calc(100dvh - 340px); min-height:220px}
-table#grid{width:100%; border-collapse:collapse}
-table#grid thead th{position:sticky; top:0; z-index:1; background:var(--card);
+/* Shared by the barcode grid (#grid) and the เลือกสินค้า grid (#selGrid) — same scaffolding,
+   different columns, so the rules key off a class rather than duplicating per id. */
+table.gridtable{width:100%; border-collapse:collapse}
+table.gridtable thead th{position:sticky; top:0; z-index:1; background:var(--card);
   text-align:left; font-size:11px; font-weight:700; letter-spacing:.6px; color:var(--mut);
   text-transform:uppercase; padding:8px 10px; border-bottom:1px solid var(--line)}
-table#grid tbody td{padding:3px 6px; border-bottom:1px solid var(--line)}
+table.gridtable tbody td{padding:3px 6px; border-bottom:1px solid var(--line)}
 .cell-barcode, .cell-price{width:100%; padding:9px 10px; font-family:'IBM Plex Mono',monospace;
   font-weight:600; font-size:14.5px; border:1.5px solid transparent; border-radius:8px;
   background:transparent; color:var(--ink)}
 .cell-barcode:focus, .cell-price:focus{outline:none; border-color:var(--ink); background:var(--paper)}
-.cell-barcode.bad-check{border-color:var(--warn); background:var(--warn-bg)}
+.cell-barcode.bad-check, .sel-barcode-out.bad-check{border-color:var(--warn); background:var(--warn-bg)}
 .cell-flag{width:100%; padding:8px 6px; border:1.5px solid transparent; border-radius:8px;
   font-size:12.5px; font-weight:600; background:transparent; color:var(--mut)}
 .cell-flag:focus{outline:none; border-color:var(--ink)}
@@ -93,6 +92,14 @@ table#grid tbody td{padding:3px 6px; border-bottom:1px solid var(--line)}
 .prodcell.miss{color:var(--warn); font-weight:600}
 .rm-row{width:26px; height:26px; border-radius:8px; color:var(--mut); font-size:15px; line-height:1}
 .rm-row:hover{background:var(--warn-bg); color:var(--warn)}
+
+/* ---- select-mode grid (brand -> item -> sku combos) ---- */
+.sel-in{width:100%; padding:9px 10px; font-size:13.5px; font-weight:600; border:1.5px solid transparent;
+  border-radius:8px; background:transparent; color:var(--ink)}
+.sel-in:focus{outline:none; border-color:var(--ink); background:var(--paper)}
+.sel-in:disabled{color:var(--mut); cursor:not-allowed}
+.sel-barcode-out{width:100%; padding:9px 10px; font-family:'IBM Plex Mono',monospace; font-weight:600;
+  font-size:13px; border:1.5px solid transparent; border-radius:8px; background:transparent; color:var(--mut)}
 
 /* ---- summary ---- */
 .statgrid2{display:grid; grid-template-columns:repeat(2,1fr); gap:10px; text-align:left}
@@ -159,18 +166,36 @@ table#grid tbody td{padding:3px 6px; border-bottom:1px solid var(--line)}
 
 /* ---- stores (จัดการร้าน) ---- */
 .sm-note{font-size:13px; color:var(--mut); margin:6px 0 14px}
-.sm-scroll{overflow:auto; max-height:calc(100dvh - 260px)}
+.sm-toolbar{display:flex; gap:12px; align-items:center; margin-bottom:14px}
+.sm-toolbar .tin{flex:1}
+.sm-addbtn{background:var(--ink); color:#fff; padding:11px 18px; border-radius:11px;
+  font-weight:700; font-size:13.5px; white-space:nowrap}
+.sm-scroll{overflow:auto; max-height:calc(100dvh - 320px)}
 table#storesTable{width:100%; border-collapse:collapse}
 table#storesTable thead th{position:sticky; top:0; background:var(--card); text-align:left;
   font-size:11px; font-weight:700; letter-spacing:.6px; color:var(--mut); text-transform:uppercase;
   padding:8px 10px; border-bottom:1px solid var(--line)}
-table#storesTable tbody td{padding:5px 8px; border-bottom:1px solid var(--line); vertical-align:middle}
-.sm-in{width:100%; padding:9px 10px; font-size:14px; font-weight:600; border:1.5px solid transparent;
-  border-radius:8px; background:transparent; color:var(--ink)}
-.sm-in:focus{outline:none; border-color:var(--ink); background:var(--paper)}
+table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line); vertical-align:middle;
+  font-size:14px}
 .sm-id{font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--mut); white-space:nowrap}
-.sm-save{padding:9px 16px; border-radius:9px; font-weight:700; font-size:13px; background:var(--ink); color:#fff}
-.sm-save:disabled{opacity:.3; cursor:default}
+.sm-editbtn{padding:9px 16px; border-radius:9px; font-weight:700; font-size:13px;
+  background:var(--ink); color:#fff; white-space:nowrap}
+.sm-flash{background:var(--amber-bg)!important; transition:background 1.2s}
+
+/* ---- store edit/create modal ---- */
+.modal-overlay{position:fixed; inset:0; background:rgba(23,25,28,.45); z-index:60;
+  display:flex; align-items:center; justify-content:center; padding:20px}
+.modal-panel{background:var(--card); border-radius:var(--r); box-shadow:var(--shadow);
+  width:100%; max-width:420px; max-height:calc(100dvh - 80px); overflow-y:auto; padding:20px;
+  display:flex; flex-direction:column; gap:16px}
+.modal-head{display:flex; align-items:center; justify-content:space-between}
+.modal-close{width:30px; height:30px; border-radius:8px; font-size:18px; color:var(--mut); line-height:1}
+.modal-close:hover{background:var(--paper)}
+.modal-body{display:flex; flex-direction:column; gap:14px}
+.modal-actions{display:flex; justify-content:flex-end; gap:10px}
+#smSaveBtn{background:var(--ink); color:#fff; padding:12px 22px; border-radius:11px;
+  font-weight:700; font-size:14px}
+#smSaveBtn:disabled{opacity:.35; cursor:default}
 
 @media (max-width:900px){
   .split{grid-template-columns:1fr}
@@ -223,7 +248,7 @@ table#storesTable tbody td{padding:5px 8px; border-bottom:1px solid var(--line);
           <button type="button" class="linkbtn" id="addRowBtn">+ แถวใหม่</button>
         </div>
         <div class="gridscroll">
-          <table id="grid">
+          <table id="grid" class="gridtable">
             <colgroup>
               <col style="width:200px"><col style="width:110px"><col style="width:130px">
               <col><col style="width:34px">
@@ -237,10 +262,21 @@ table#storesTable tbody td{padding:5px 8px; border-bottom:1px solid var(--line);
       </div>
 
       <div class="card hidden" id="selectModeCard">
-        <div class="eyebrow">เลือกสินค้า</div>
-        <div class="placeholder-note">
-          โหมดนี้ต้องใช้ API <code>?action=psearch</code> ซึ่งยังไม่เปิดใช้งานในระบบหลังบ้าน —
-          ตอนนี้ใช้โหมด “บาร์โค้ด” ไปก่อน เมื่อ endpoint พร้อมแล้วโหมดนี้จะเปิดใช้งานได้
+        <div class="gridhead">
+          <div class="eyebrow" style="margin:0">เลือกยี่ห้อ → สินค้า → สี/เฉด/รุ่น แล้วราคา · Enter เพื่อไปช่องถัดไป</div>
+          <button type="button" class="linkbtn" id="addSelRowBtn">+ แถวใหม่</button>
+        </div>
+        <div class="gridscroll">
+          <table id="selGrid" class="gridtable">
+            <colgroup>
+              <col style="width:170px"><col style="width:210px"><col style="width:160px">
+              <col style="width:110px"><col style="width:130px"><col style="width:150px"><col style="width:34px">
+            </colgroup>
+            <thead>
+              <tr><th>ยี่ห้อ</th><th>สินค้า</th><th>สี/เฉด/รุ่น</th><th>ราคา</th><th>ประเภท</th><th>บาร์โค้ด</th><th></th></tr>
+            </thead>
+            <tbody id="selGridBody"></tbody>
+          </table>
         </div>
       </div>
 
@@ -284,9 +320,15 @@ table#storesTable tbody td{padding:5px 8px; border-bottom:1px solid var(--line);
 
   <section id="storesScreen" class="card hidden">
     <div class="eyebrow">จัดการร้าน</div>
-    <!-- Store CREATION happens from the phone during a visit (writeOne's new_store path in
-         code.gs) — this screen only edits rows that already exist. -->
-    <div class="sm-note">ร้านใหม่ถูกสร้างจากมือถือตอนลงพื้นที่สำรวจ — หน้านี้ใช้แก้ไขข้อมูลร้านที่มีอยู่แล้วเท่านั้น</div>
+    <!-- No delete: removing a store orphans its observations, and viewdata drops rows whose
+         store_id does not resolve, silently — there is no safe way to undo that from the data
+         alone, so this screen only ever edits or adds rows, never removes one. -->
+    <div class="sm-note">แก้ไขข้อมูลร้านที่มีอยู่ หรือเพิ่มร้านใหม่ได้จากหน้านี้ — ไม่มีปุ่มลบร้าน</div>
+    <div class="sm-toolbar">
+      <input type="text" class="tin" id="storesFilter" autocomplete="off" autocorrect="off"
+             spellcheck="false" placeholder="กรองตามชื่อร้าน / ภูมิภาค / ช่องทาง…">
+      <button type="button" class="sm-addbtn" id="addStoreBtn">+ เพิ่มร้านใหม่</button>
+    </div>
     <div class="sm-scroll">
       <table id="storesTable">
         <colgroup>
@@ -300,6 +342,37 @@ table#storesTable tbody td{padding:5px 8px; border-bottom:1px solid var(--line);
       </table>
     </div>
   </section>
+
+  <div class="modal-overlay hidden" id="storeModalOverlay">
+    <div class="modal-panel" id="storeModalPanel" role="dialog" aria-modal="true" aria-labelledby="storeModalTitle">
+      <div class="modal-head">
+        <div class="eyebrow" id="storeModalTitle" style="margin:0">แก้ไขร้าน</div>
+        <button type="button" class="modal-close" id="storeModalCloseBtn" aria-label="ปิด">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label class="eyebrow" for="smName">ชื่อร้าน</label>
+          <input type="text" class="tin" id="smName" autocomplete="off" autocorrect="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label class="eyebrow" for="smRegion">ภูมิภาค</label>
+          <input type="text" class="tin" id="smRegion" autocomplete="off" autocorrect="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label class="eyebrow" for="smChannel">ช่องทาง</label>
+          <select class="tin" id="smChannel"></select>
+        </div>
+        <div class="field">
+          <label class="eyebrow" for="smNotes">หมายเหตุ</label>
+          <textarea class="tin" id="smNotes" rows="2"></textarea>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="linkbtn" id="smCancelBtn">ยกเลิก</button>
+        <button type="button" id="smSaveBtn">บันทึก</button>
+      </div>
+    </div>
+  </div>
 
 </main>
 
@@ -574,6 +647,280 @@ function collectRows(){
   });
 }
 
+/* ================= SELECT MODE (เลือกสินค้า) =================
+   For shelves with no printed barcode. The admin narrows an EXISTING master product by
+   brand -> item -> sku instead of typing a code; this mode can never create a product. It
+   shares the store/date/draft/submit machinery above — only row entry differs, so every
+   function below produces the same barcode+price+flag shape collectRows() does, and
+   submitBatch() (further down) merges both grids into one POST. */
+const SEL = {
+  vocabLoaded: false, vocabLoading: false, brands: [],
+  brandCache: new Map(),     // brand -> products[] from psearch?brand=..&limit=200
+  queue: [], inflight: 0
+};
+const SEL_MAX_INFLIGHT = 3;
+
+async function ensureVocabLoaded(){
+  if (SEL.vocabLoaded || SEL.vocabLoading) return;
+  SEL.vocabLoading = true;
+  const d = await api('?action=vocab');
+  SEL.vocabLoading = false;
+  if (d.ok && Array.isArray(d.brands)) { SEL.vocabLoaded = true; SEL.brands = d.brands; }
+  else toast('โหลดรายชื่อยี่ห้อไม่สำเร็จ', true);
+}
+
+/** One product list per brand, queued and capped like the barcode-lookup queue above so
+ *  several rows picking different brands in a row cannot fire dozens of requests at once. */
+function queueBrandFetch(brand, cb){
+  if (SEL.brandCache.has(brand)) { cb(SEL.brandCache.get(brand)); return; }
+  SEL.queue.push({ brand, cb });
+  pumpSelQueue();
+}
+function pumpSelQueue(){
+  while (SEL.inflight < SEL_MAX_INFLIGHT && SEL.queue.length) {
+    const job = SEL.queue.shift();
+    if (SEL.brandCache.has(job.brand)) { job.cb(SEL.brandCache.get(job.brand)); continue; }
+    SEL.inflight++;
+    api(`?action=psearch&brand=${encodeURIComponent(job.brand)}&limit=200`)
+      .then(d => {
+        const products = (d.ok && Array.isArray(d.p)) ? d.p : [];
+        SEL.brandCache.set(job.brand, products);
+        job.cb(products);
+      })
+      .finally(() => { SEL.inflight--; pumpSelQueue(); });
+  }
+}
+
+function distinctItems(products){
+  const seen = new Set(), out = [];
+  products.forEach(p => { const v = String(p.item || '').trim(); if (v && !seen.has(v)) { seen.add(v); out.push(v); } });
+  return out;
+}
+function distinctSkusFor(products, item){
+  const seen = new Set(), out = [];
+  products.forEach(p => {
+    if (item && String(p.item || '').trim() !== item) return;
+    const v = String(p.sku || '').trim(); if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+  });
+  return out;
+}
+
+let selRowSeq = 0;
+// rowId -> { brand, products (null until fetched), resolved (the one matching product, or
+// null), barcode (resolved.barcode or ''), ambiguous, fetchToken (guards stale responses) }
+const selRowMeta = new Map();
+
+function selRowHtml(id, data = {}){
+  const brand = esc(data.brand || ''), item = esc(data.item || ''), sku = esc(data.sku || '');
+  const price = esc(data.price || '');
+  const flag = data.flag || 'normal';
+  const opt = (v, label) => `<option value="${v}"${flag === v ? ' selected' : ''}>${label}</option>`;
+  return `<tr data-selrow="${id}">
+    <td class="combo">
+      <input type="text" class="sel-in sel-brand" autocomplete="off" autocorrect="off" spellcheck="false" value="${brand}">
+      <div class="combo-list hidden sel-brand-drop"></div>
+    </td>
+    <td class="combo">
+      <input type="text" class="sel-in sel-item" autocomplete="off" autocorrect="off" spellcheck="false" value="${item}">
+      <div class="combo-list hidden sel-item-drop"></div>
+    </td>
+    <td class="combo">
+      <input type="text" class="sel-in sel-sku" autocomplete="off" autocorrect="off" spellcheck="false" value="${sku}">
+      <div class="combo-list hidden sel-sku-drop"></div>
+    </td>
+    <td><input type="text" class="cell-price sel-price" inputmode="decimal" autocomplete="off" value="${price}"></td>
+    <td><select class="cell-flag sel-flag">
+      ${opt('normal', 'ปกติ')}${opt('promo', 'โปรฯ')}${opt('short_shelf_life', 'ใกล้หมดอายุ')}
+    </select></td>
+    <td><input type="text" class="sel-barcode-out" readonly tabindex="-1" value="${esc(data.barcode || '')}"></td>
+    <td><button type="button" class="rm-row" tabindex="-1" title="ลบแถว" data-rm-sel="${id}">×</button></td>
+  </tr>`;
+}
+
+function selRowEl(id){ return $('selGridBody').querySelector(`tr[data-selrow="${id}"]`); }
+function allSelRowIds(){ return [...$('selGridBody').querySelectorAll('tr')].map(tr => Number(tr.dataset.selrow)); }
+function focusSelCell(id, col){ const tr = selRowEl(id); if (tr) { const el = tr.querySelector(`.sel-${col}`); if (el) el.focus(); } }
+function hideSelDrop(id, which){ const tr = selRowEl(id); if (tr) { const b = tr.querySelector(`.sel-${which}-drop`); if (b) b.classList.add('hidden'); } }
+
+function addSelRow(data = {}, focus = true){
+  const id = ++selRowSeq;
+  $('selGridBody').insertAdjacentHTML('beforeend', selRowHtml(id, data));
+  // meta.brand is seeded from `data`, not '' — so a restored row's item/sku (already in the
+  // DOM above) survive the fetch below instead of being wiped by commitSelBrand's change check.
+  selRowMeta.set(id, { brand: data.brand || '', products: null, resolved: null,
+    barcode: data.barcode || '', ambiguous: false, fetchToken: 0 });
+  renderSelBarcode(id);
+  if (data.brand) fetchBrandProducts(id, data.brand);   // draft restore: re-fetch so item/sku pickers work
+  if (focus) focusSelCell(id, 'brand');
+  return id;
+}
+
+function removeSelRow(id){
+  const tr = selRowEl(id);
+  if (!tr) return;
+  tr.remove();
+  selRowMeta.delete(id);
+  if (!allSelRowIds().length) addSelRow({}, false);   // always keep at least one row, like the barcode grid
+  saveDraft(); renderSummary(); updateSubmitButton();
+}
+
+/** Re-derive resolution from whatever brand/item/sku text is currently in the row's cells
+ *  against the cached product list for that brand. Exactly one match = a submittable row. */
+function computeRowResolution(id){
+  const tr = selRowEl(id); if (!tr) return;
+  const meta = selRowMeta.get(id); if (!meta) return;
+  const brand = tr.querySelector('.sel-brand').value.trim();
+  const item = tr.querySelector('.sel-item').value.trim();
+  const sku = tr.querySelector('.sel-sku').value.trim();
+  let matches = meta.products || [];
+  if (item) matches = matches.filter(p => String(p.item || '').trim() === item);
+  if (sku) matches = matches.filter(p => String(p.sku || '').trim() === sku);
+  const resolved = (brand && item && matches.length === 1) ? matches[0] : null;
+  meta.resolved = resolved;
+  meta.barcode = resolved ? String(resolved.barcode) : '';
+  meta.ambiguous = !!(brand && item && !resolved);
+  selRowMeta.set(id, meta);
+  renderSelBarcode(id);
+}
+
+function renderSelBarcode(id){
+  const tr = selRowEl(id); if (!tr) return;
+  const meta = selRowMeta.get(id) || {};
+  const brand = tr.querySelector('.sel-brand').value.trim();
+  const out = tr.querySelector('.sel-barcode-out');
+  tr.querySelector('.sel-item').disabled = !brand;
+  tr.querySelector('.sel-sku').disabled = !brand || !meta.products;
+  if (!brand) out.value = '';
+  else if (!meta.products) out.value = 'กำลังโหลด…';
+  else out.value = meta.resolved ? String(meta.resolved.barcode) : '';
+  out.classList.toggle('bad-check', !!meta.ambiguous);
+}
+
+/** Fetches (or reuses the cached) product list for `brand` and, once it lands, re-resolves the
+ *  row against it. Split out from commitSelBrand so restoring a draft row can populate a brand's
+ *  products WITHOUT wiping the item/sku values that came along with it in the same draft row. */
+function fetchBrandProducts(id, brand){
+  const meta = selRowMeta.get(id); if (!meta) return;
+  meta.fetchToken = (meta.fetchToken || 0) + 1;
+  const myToken = meta.fetchToken;
+  queueBrandFetch(brand, products => {
+    const cur = selRowMeta.get(id);
+    if (!cur || cur.fetchToken !== myToken) return;   // row's brand moved on, or row was removed
+    cur.products = products;
+    selRowMeta.set(id, cur);
+    computeRowResolution(id);
+    saveDraft(); renderSummary(); updateSubmitButton();
+  });
+}
+
+/** ยี่ห้อ committed (Enter, dropdown click, or leaving the field). A changed brand clears item/
+ *  sku — a stale sku from a different brand's list must never linger — and (re)fetches its
+ *  product list. `jump` mirrors the barcode grid's Enter rhythm: only an explicit commit
+ *  advances focus, a plain blur does not. */
+function commitSelBrand(id, jump){
+  const tr = selRowEl(id); if (!tr) return;
+  const brand = tr.querySelector('.sel-brand').value.trim();
+  let meta = selRowMeta.get(id) || {};
+  if (meta.brand !== brand) {
+    meta = { brand, products: null, resolved: null, barcode: '', ambiguous: false, fetchToken: meta.fetchToken || 0 };
+    tr.querySelector('.sel-item').value = '';
+    tr.querySelector('.sel-sku').value = '';
+    selRowMeta.set(id, meta);
+    if (brand) fetchBrandProducts(id, brand);
+  }
+  renderSelBarcode(id);
+  saveDraft(); renderSummary(); updateSubmitButton();
+  if (jump) focusSelCell(id, 'item');
+}
+
+/** สินค้า committed. If brand+item alone already pins down exactly one product, the sku step
+ *  is skipped entirely — auto-fill it and jump straight to price, per spec. */
+function syncSelItem(id, jump){
+  const tr = selRowEl(id); if (!tr) return;
+  const meta = selRowMeta.get(id) || {};
+  const item = tr.querySelector('.sel-item').value.trim();
+  const skuField = tr.querySelector('.sel-sku');
+  if (item && !skuField.value.trim()) {
+    const matches = (meta.products || []).filter(p => String(p.item || '').trim() === item);
+    if (matches.length === 1) skuField.value = matches[0].sku || '';
+  }
+  computeRowResolution(id);
+  saveDraft(); renderSummary(); updateSubmitButton();
+  if (jump) focusSelCell(id, (selRowMeta.get(id) || {}).resolved ? 'price' : 'sku');
+}
+
+function syncSelSku(id, jump){
+  computeRowResolution(id);
+  saveDraft(); renderSummary(); updateSubmitButton();
+  if (jump) focusSelCell(id, 'price');
+}
+
+function advanceAfterSelPrice(id){
+  const ids = allSelRowIds();
+  const idx = ids.indexOf(id);
+  if (idx === ids.length - 1) addSelRow({}, true);
+  else focusSelCell(ids[idx + 1], 'brand');
+}
+
+function renderFuzzyDrop(box, options, raw, onPick){
+  const hits = options.map(v => ({ v, score: fuzzyScore(v, raw) })).filter(x => x.score > 0)
+    .sort((a, c) => c.score - a.score || a.v.localeCompare(c.v)).slice(0, 10);
+  box.innerHTML = '';
+  hits.forEach(x => {
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.textContent = x.v;
+    btn.addEventListener('click', () => onPick(x.v));
+    box.appendChild(btn);
+  });
+  box.classList.toggle('hidden', !hits.length);
+}
+
+function renderSelBrandDrop(id){
+  const tr = selRowEl(id); if (!tr) return;
+  const input = tr.querySelector('.sel-brand'), box = tr.querySelector('.sel-brand-drop');
+  if (!SEL.vocabLoaded) {
+    box.innerHTML = SEL.vocabLoading ? '<div class="combo-empty">กำลังโหลด…</div>' : '';
+    box.classList.toggle('hidden', !SEL.vocabLoading);
+    return;
+  }
+  renderFuzzyDrop(box, SEL.brands, input.value.trim(), v => {
+    input.value = v; hideSelDrop(id, 'brand'); commitSelBrand(id, true);
+  });
+}
+function renderSelItemDrop(id){
+  const tr = selRowEl(id); if (!tr) return;
+  const input = tr.querySelector('.sel-item'), box = tr.querySelector('.sel-item-drop');
+  const meta = selRowMeta.get(id) || {};
+  renderFuzzyDrop(box, distinctItems(meta.products || []), input.value.trim(), v => {
+    input.value = v; hideSelDrop(id, 'item'); syncSelItem(id, true);
+  });
+}
+function renderSelSkuDrop(id){
+  const tr = selRowEl(id); if (!tr) return;
+  const input = tr.querySelector('.sel-sku'), box = tr.querySelector('.sel-sku-drop');
+  const meta = selRowMeta.get(id) || {};
+  const item = tr.querySelector('.sel-item').value.trim();
+  renderFuzzyDrop(box, distinctSkusFor(meta.products || [], item), input.value.trim(), v => {
+    input.value = v; hideSelDrop(id, 'sku'); syncSelSku(id, true);
+  });
+}
+
+function collectSelRows(){
+  return allSelRowIds().map(id => {
+    const tr = selRowEl(id);
+    const meta = selRowMeta.get(id) || {};
+    return {
+      id,
+      brand: tr.querySelector('.sel-brand').value.trim(),
+      item: tr.querySelector('.sel-item').value.trim(),
+      sku: tr.querySelector('.sel-sku').value.trim(),
+      price: tr.querySelector('.sel-price').value.trim(),
+      flag: tr.querySelector('.sel-flag').value,
+      barcode: meta.barcode || ''   // '' whenever brand/item/sku do not resolve to exactly one product
+    };
+  });
+}
+
 /* ================= SUMMARY (right pane) ================= */
 function renderSummary(){
   const rows = allRowIds()
@@ -605,10 +952,10 @@ function renderSummary(){
 }
 
 function updateSubmitButton(){
-  const rows = collectRows();
-  const valid = rows.filter(r => r.barcode && priceValue(r.price) !== null);
-  $('submitBtn').textContent = `บันทึกทั้งหมด (${valid.length} รายการ)`;
-  $('submitBtn').disabled = !valid.length || !S.storeId;
+  const isValid = r => r.barcode && priceValue(r.price) !== null;
+  const valid = collectRows().filter(isValid).length + collectSelRows().filter(isValid).length;
+  $('submitBtn').textContent = `บันทึกทั้งหมด (${valid} รายการ)`;
+  $('submitBtn').disabled = !valid || !S.storeId;
 }
 
 /* ================= DRAFT PERSISTENCE =================
@@ -616,8 +963,12 @@ function updateSubmitButton(){
    rows to an accidentally-closed tab is not an acceptable failure mode for this tool. */
 function saveDraft(){
   const rows = collectRows().map(r => ({ barcode: r.barcode, price: r.price, flag: r.flag }));
+  // selRows carries brand/item/sku too — not just the resolved barcode — so a row the admin
+  // was still narrowing (not yet resolved) is not silently lost on reload.
+  const selRows = collectSelRows().map(r => ({ brand: r.brand, item: r.item, sku: r.sku,
+    barcode: r.barcode, price: r.price, flag: r.flag }));
   ls.set('ps_admin_draft', {
-    storeId: S.storeId, storeName: S.store, date: $('dateInput').value, mode: S.mode, rows
+    storeId: S.storeId, storeName: S.store, date: $('dateInput').value, mode: S.mode, rows, selRows
   });
 }
 let draftT;
@@ -625,18 +976,23 @@ function scheduleDraftSave(){ clearTimeout(draftT); draftT = setTimeout(saveDraf
 
 function restoreDraft(){
   const d = ls.get('ps_admin_draft', null);
-  if (!d) { addRow({}, false); return; }
+  if (!d) { addRow({}, false); addSelRow({}, false); return; }
   if (d.date) $('dateInput').value = d.date;
   if (d.storeId) { S.storeId = d.storeId; S.store = d.storeName || ''; $('storeInput').value = S.store; }
   const rows = Array.isArray(d.rows) && d.rows.length ? d.rows : [{}];
   rows.forEach(r => addRow(r, false));
+  const selRows = Array.isArray(d.selRows) && d.selRows.length ? d.selRows : [{}];
+  selRows.forEach(r => addSelRow(r, false));
   if (d.mode) setMode(d.mode, false);
 }
 
 function clearGridKeepStoreDate(){
   $('gridBody').innerHTML = '';
   rowMeta.clear();
-  addRow({}, true);
+  addRow({}, S.mode === 'barcode');
+  $('selGridBody').innerHTML = '';
+  selRowMeta.clear();
+  addSelRow({}, S.mode === 'select');
   saveDraft(); renderSummary(); updateSubmitButton();
 }
 
@@ -659,14 +1015,25 @@ function todayStr(){
 function visitISO(dateVal){ return new Date(dateVal + 'T12:00:00').toISOString(); }
 
 let submitting = false;
-/** Rebuild the grid containing only the rows the server did not confirm. */
-function keepOnlyFailedRows(failed){
-  const byCode = new Map(failed.map(f => [String(f.barcode) + '|' + f.price, f]));
-  const survivors = collectRows().filter(r =>
-    byCode.has(String(r.barcode) + '|' + priceValue(r.price)));
+/** Rebuild both grids containing only the rows the server did not confirm. */
+/**
+ * Keep every row the server did NOT confirm — which includes rows that were never submitted
+ * at all (still being narrowed down, or missing a price). Those represent unsaved typing just
+ * as much as a failed row does, and clearing them because a *different* row failed would throw
+ * away work the user never got a chance to finish.
+ */
+function keepOnlyFailedRows(confirmed){
+  const isConfirmed = r => {
+    const pv = priceValue(r.price);
+    return r.barcode && pv !== null && confirmed.has(String(r.barcode) + '|' + pv);
+  };
+  const survivors = collectRows().filter(r => !isConfirmed(r));
+  const selSurvivors = collectSelRows().filter(r => !isConfirmed(r));
   clearGridKeepStoreDate();
   survivors.forEach(r => addRow(r, false));
   if (!survivors.length) addRow({}, false);
+  selSurvivors.forEach(r => addSelRow(r, false));
+  if (!selSurvivors.length) addSelRow({}, false);
   saveDraft(); renderSummary();
 }
 
@@ -677,17 +1044,20 @@ async function submitBatch(){
   if (!dateVal) { toast('ยังไม่ได้เลือกวันที่', true); return; }
 
   const ts = visitISO(dateVal);
-  const rows = collectRows();
   const items = [];
   let skipped = 0;
-  rows.forEach(r => {
+  // Barcode-mode and select-mode rows end up as identical observation records — same shape,
+  // same source — so both grids feed the same push, rather than two separate submit paths.
+  const pushRow = r => {
     const pv = priceValue(r.price);
     if (!r.barcode || pv === null) { skipped++; return; }
     items.push(buildObs({
       obsId: makeId('O'), ts, storeId: S.storeId,
       barcode: r.barcode, price: pv, flag: r.flag, by: DEVICE, source: 'manual'
     }));
-  });
+  };
+  collectRows().forEach(pushRow);
+  collectSelRows().forEach(pushRow);
 
   if (!items.length) { toast('ไม่มีรายการที่บันทึกได้', true); return; }
 
@@ -712,12 +1082,16 @@ async function submitBatch(){
   const ok = new Set(d.results.filter(r => r.status === 'written' || r.status === 'duplicate')
                               .map(r => r.id));
   const failed = items.filter(it => !ok.has(it.obs_id));
+  // Confirmed rows are identified by barcode+price, since obs_id is generated at submit time
+  // and does not exist on the grid rows themselves.
+  const confirmedKeys = new Set(items.filter(it => ok.has(it.obs_id))
+                                     .map(it => String(it.barcode) + '|' + it.price));
   const skipMsg = skipped ? ` · ข้ามไป ${skipped} แถว (ว่างหรือไม่มีราคา)` : '';
 
   if (failed.length) {
     // Never clear rows the server did not confirm. Silently dropping typed work because the
     // response "looked" successful is the worst outcome this page can produce.
-    keepOnlyFailedRows(failed);
+    keepOnlyFailedRows(confirmedKeys);
     setSubmitStatus(`บันทึก ${ok.size} รายการ · ${failed.length} แถวไม่สำเร็จ ยังอยู่ในตาราง`, true);
     toast(`${failed.length} แถวไม่สำเร็จ`, true);
     updateSubmitButton();
@@ -1045,10 +1419,12 @@ function skipReview(){
 }
 
 /* ================= STORES (จัดการร้าน) =================
-   Store CREATION happens from the phone during a visit (see writeOne's new_store handling in
-   code.gs) — this screen only edits rows that already exist. No delete: removing a store would
-   orphan its observations, and viewdata drops rows whose store_id does not resolve, silently. */
-const SM = { loaded: false, loading: false, stores: [] };   // {id, storeName, region, channel, notes}
+   Read-only table + an edit/create modal — inline-editing every row does not scale past a
+   handful of stores. No delete: removing a store would orphan its observations, and viewdata
+   drops rows whose store_id does not resolve, silently. */
+const SM = { loaded: false, loading: false, stores: [], filterText: '', editingId: null, lastFocus: null };
+// stores: {id, storeName, region, channel, notes}
+// editingId: the store id being edited, or null while the modal is in "create new" mode
 
 async function ensureStoresLoaded(){
   if (SM.loaded || SM.loading) return;
@@ -1078,75 +1454,136 @@ function channelOptionsHtml(current){
 
 function storeRowHtml(s){
   return `<tr data-store="${esc(s.id)}">
-    <td><input type="text" class="tin sm-in" data-f="storeName" value="${esc(s.storeName)}"></td>
-    <td><input type="text" class="tin sm-in" data-f="region" value="${esc(s.region)}"></td>
-    <td><select class="tin sm-in" data-f="channel">${channelOptionsHtml(s.channel)}</select></td>
-    <td><input type="text" class="tin sm-in" data-f="notes" value="${esc(s.notes)}"></td>
+    <td>${esc(s.storeName)}</td>
+    <td>${esc(s.region)}</td>
+    <td>${esc(s.channel)}</td>
+    <td>${esc(s.notes)}</td>
     <td class="sm-id">${esc(s.id)}</td>
-    <td><button type="button" class="sm-save" disabled>บันทึก</button></td>
+    <td><button type="button" class="sm-editbtn" data-edit="${esc(s.id)}">แก้ไข</button></td>
   </tr>`;
+}
+
+function filteredStores(){
+  const q = SM.filterText.trim().toLowerCase();
+  if (!q) return SM.stores;
+  return SM.stores.filter(s =>
+    String(s.storeName).toLowerCase().includes(q) ||
+    String(s.region).toLowerCase().includes(q) ||
+    String(s.channel).toLowerCase().includes(q));
 }
 
 function renderStoresTable(){
   const body = $('storesBody');
   if (SM.loading) { body.innerHTML = '<tr><td colspan="6" class="empty-note">กำลังโหลด…</td></tr>'; return; }
   if (!SM.stores.length) { body.innerHTML = '<tr><td colspan="6" class="empty-note">ยังไม่มีร้านค้า</td></tr>'; return; }
-  body.innerHTML = SM.stores.map(storeRowHtml).join('');
+  const rows = filteredStores();
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="6" class="empty-note">ไม่พบร้านที่ค้นหา</td></tr>'; return; }
+  body.innerHTML = rows.map(storeRowHtml).join('');
 }
 
-function storeRowValues(tr){
-  return {
-    storeName: tr.querySelector('[data-f="storeName"]').value.trim(),
-    region: tr.querySelector('[data-f="region"]').value.trim(),
-    channel: tr.querySelector('[data-f="channel"]').value,
-    notes: tr.querySelector('[data-f="notes"]').value.trim()
-  };
+/** Opens the edit/create modal. `id` null means "add a new store" — same panel, empty fields. */
+function openStoreModal(id){
+  const s = id ? SM.stores.find(x => x.id === id) : null;
+  SM.editingId = s ? s.id : null;
+  $('storeModalTitle').textContent = s ? 'แก้ไขร้าน' : 'เพิ่มร้านใหม่';
+  $('smName').value = s ? s.storeName : '';
+  $('smRegion').value = s ? s.region : '';
+  $('smChannel').innerHTML = channelOptionsHtml(s ? s.channel : '');
+  $('smNotes').value = s ? s.notes : '';
+  $('smSaveBtn').disabled = false;
+  SM.lastFocus = document.activeElement;
+  $('storeModalOverlay').classList.remove('hidden');
+  $('smName').focus();
+}
+function closeStoreModal(){
+  $('storeModalOverlay').classList.add('hidden');
+  SM.editingId = null;
+  if (SM.lastFocus && typeof SM.lastFocus.focus === 'function') SM.lastFocus.focus();
 }
 
-function updateRowSaveState(tr){
-  const orig = SM.stores.find(x => x.id === tr.dataset.store);
-  if (!orig) return;
-  const cur = storeRowValues(tr);
-  const changed = Object.keys(cur).some(k => cur[k] !== (orig[k] || ''));
-  tr.querySelector('.sm-save').disabled = !changed;
+/** Scrolls to and briefly highlights a row — used both after creating a store and after
+ *  "exists" hands back an already-known one. Clears any active filter first, or the row the
+ *  caller wants shown might not even be in the DOM to scroll to. */
+function highlightStoreRow(id){
+  SM.filterText = '';
+  const f = $('storesFilter'); if (f) f.value = '';
+  renderStoresTable();
+  requestAnimationFrame(() => {
+    const tr = $('storesBody').querySelector(`tr[data-store="${CSS.escape(String(id))}"]`);
+    if (!tr) return;
+    tr.scrollIntoView({ block: 'center' });
+    tr.classList.add('sm-flash');
+    setTimeout(() => tr.classList.remove('sm-flash'), 1600);
+  });
 }
 
-async function saveStoreRow(tr){
-  const orig = SM.stores.find(x => x.id === tr.dataset.store);
-  if (!orig) return;
-  const cur = storeRowValues(tr);
-  const fields = {};   // wire key is "store", not "storeName" — see updateStore's BE_KEYS in code.gs
-  if (cur.storeName !== (orig.storeName || '')) fields.store = cur.storeName;
-  if (cur.region !== (orig.region || '')) fields.region = cur.region;
-  if (cur.channel !== (orig.channel || '')) fields.channel = cur.channel;
-  if (cur.notes !== (orig.notes || '')) fields.notes = cur.notes;
-  if (!Object.keys(fields).length) return;
-
-  const btn = tr.querySelector('.sm-save');
+async function saveStoreModal(){
+  const storeName = $('smName').value.trim();
+  const region = $('smRegion').value.trim();
+  const channel = $('smChannel').value;
+  const notes = $('smNotes').value.trim();
+  const btn = $('smSaveBtn');
   btn.disabled = true;
-  const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({ type: 'updateStore', store_id: orig.id, fields }) }, 20000);
-  const r = d.ok && Array.isArray(d.results) ? d.results[0] : null;
 
-  if (r && r.status === 'duplicate_name') {
-    // The whole write was refused before anything was touched — revert every field in the row,
-    // not just the name, or the screen shows unsaved values that look like they went through.
-    tr.querySelector('[data-f="storeName"]').value = orig.storeName;
-    tr.querySelector('[data-f="region"]').value = orig.region;
-    tr.querySelector('[data-f="channel"]').value = orig.channel;
-    tr.querySelector('[data-f="notes"]').value = orig.notes;
-    toast('ชื่อนี้ถูกใช้กับร้านอื่นแล้ว — ยังไม่ได้บันทึกการเปลี่ยนแปลง', true);
-    updateRowSaveState(tr);
+  if (SM.editingId) {
+    const orig = SM.stores.find(x => x.id === SM.editingId);
+    if (!orig) { closeStoreModal(); return; }
+    const fields = {};   // wire key is "store", not "storeName" — see updateStore's BE_KEYS in code.gs
+    if (storeName !== (orig.storeName || '')) fields.store = storeName;
+    if (region !== (orig.region || '')) fields.region = region;
+    if (channel !== (orig.channel || '')) fields.channel = channel;
+    if (notes !== (orig.notes || '')) fields.notes = notes;
+    if (!Object.keys(fields).length) { closeStoreModal(); return; }
+
+    const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ type: 'updateStore', store_id: orig.id, fields }) }, 20000);
+    const r = d.ok && Array.isArray(d.results) ? d.results[0] : null;
+
+    if (r && r.status === 'duplicate_name') {
+      // The whole write was refused before anything was touched — the table still shows the
+      // pre-edit values, so there is nothing on screen to revert, only the modal to leave open.
+      toast('ชื่อนี้ถูกใช้กับร้านอื่นแล้ว — ยังไม่ได้บันทึกการเปลี่ยนแปลง', true);
+      btn.disabled = false;
+      return;
+    }
+    if (!r || r.status !== 'updated') {
+      toast('บันทึกไม่สำเร็จ', true);
+      btn.disabled = false;
+      return;
+    }
+    Object.assign(orig, { storeName, region, channel, notes });
+    toast('บันทึกแล้ว');
+    closeStoreModal();
+    highlightStoreRow(orig.id);
     return;
   }
-  if (!r || r.status !== 'updated') {
-    toast('บันทึกไม่สำเร็จ', true);
-    updateRowSaveState(tr);
+
+  // Create mode.
+  if (!storeName) { toast('กรุณาระบุชื่อร้าน', true); btn.disabled = false; return; }
+  const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ type: 'createStore', store_id: '', store: storeName, region, channel, notes }) }, 20000);
+  const r = d.ok && Array.isArray(d.results) ? d.results[0] : null;
+  if (!r) { toast('บันทึกไม่สำเร็จ', true); btn.disabled = false; return; }
+
+  if (r.status === 'invalid') {
+    toast('กรุณาระบุชื่อร้าน', true);
+    btn.disabled = false;
     return;
   }
-  Object.assign(orig, cur);
-  updateRowSaveState(tr);
-  toast('บันทึกแล้ว');
+  if (r.status === 'exists') {
+    // The shop is already in the sheet — the server hands back its real id rather than create
+    // a duplicate row, so show the existing row instead of pretending a new one was added.
+    toast('ร้านนี้มีอยู่แล้วในระบบ — แสดงร้านเดิมให้แล้ว', true);
+    closeStoreModal();
+    highlightStoreRow(r.id);
+    return;
+  }
+  if (r.status !== 'created') { toast('บันทึกไม่สำเร็จ', true); btn.disabled = false; return; }
+
+  SM.stores.push({ id: r.id, storeName, region, channel, notes });
+  toast('เพิ่มร้านแล้ว');
+  closeStoreModal();
+  highlightStoreRow(r.id);
 }
 
 /* ================= MODE / TABS ================= */
@@ -1157,6 +1594,7 @@ function setMode(mode, persist = true){
   $('barcodeGridWrap').classList.toggle('hidden', mode !== 'barcode');
   $('summaryCard').classList.toggle('hidden', mode !== 'barcode');
   $('selectModeCard').classList.toggle('hidden', mode !== 'select');
+  if (mode === 'select') ensureVocabLoaded();   // lazy: no brand list fetched until the mode is actually used
   if (persist) saveDraft();
 }
 
@@ -1176,6 +1614,7 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.combo')) {
     $('storeDrop').classList.add('hidden');
     const bd = $('rvBrandDrop'); if (bd) bd.classList.add('hidden');
+    $('selGridBody').querySelectorAll('.combo-list').forEach(el => el.classList.add('hidden'));
   }
 });
 
@@ -1224,6 +1663,56 @@ $('unresolvedList').addEventListener('click', e => {
   if (btn) focusCell(Number(btn.dataset.focus), 'barcode');
 });
 
+/* ---- select-mode grid wiring ---- */
+$('addSelRowBtn').addEventListener('click', () => addSelRow({}, true));
+
+$('selGridBody').addEventListener('keydown', e => {
+  const t = e.target;
+  const tr = t.closest('tr'); if (!tr) return;
+  const id = Number(tr.dataset.selrow);
+  if (t.classList.contains('sel-brand') && e.key === 'Enter') {
+    e.preventDefault(); hideSelDrop(id, 'brand'); commitSelBrand(id, true);
+  } else if (t.classList.contains('sel-item') && e.key === 'Enter') {
+    e.preventDefault(); hideSelDrop(id, 'item'); syncSelItem(id, true);
+  } else if (t.classList.contains('sel-sku') && e.key === 'Enter') {
+    e.preventDefault(); hideSelDrop(id, 'sku'); syncSelSku(id, true);
+  } else if (t.classList.contains('sel-price') && e.key === 'Enter') {
+    e.preventDefault(); advanceAfterSelPrice(id);
+  }
+});
+// Same "commit on any way of leaving the cell" rule as the barcode grid's commitBarcode.
+$('selGridBody').addEventListener('focusout', e => {
+  const tr = e.target.closest('tr'); if (!tr) return;
+  const id = Number(tr.dataset.selrow);
+  if (e.target.classList.contains('sel-brand')) commitSelBrand(id, false);
+  else if (e.target.classList.contains('sel-item')) syncSelItem(id, false);
+  else if (e.target.classList.contains('sel-sku')) syncSelSku(id, false);
+});
+$('selGridBody').addEventListener('input', e => {
+  const t = e.target; const tr = t.closest('tr'); if (!tr) return;
+  const id = Number(tr.dataset.selrow);
+  if (t.classList.contains('sel-brand')) renderSelBrandDrop(id);
+  else if (t.classList.contains('sel-item')) renderSelItemDrop(id);
+  else if (t.classList.contains('sel-sku')) renderSelSkuDrop(id);
+  else if (t.classList.contains('sel-price')) updateSubmitButton();
+  scheduleDraftSave();
+});
+// focus does not bubble — must be captured — so the dropdown reopens when tabbing back into a field.
+$('selGridBody').addEventListener('focus', e => {
+  const t = e.target; const tr = t.closest('tr'); if (!tr) return;
+  const id = Number(tr.dataset.selrow);
+  if (t.classList.contains('sel-brand')) renderSelBrandDrop(id);
+  else if (t.classList.contains('sel-item')) renderSelItemDrop(id);
+  else if (t.classList.contains('sel-sku')) renderSelSkuDrop(id);
+}, true);
+$('selGridBody').addEventListener('change', e => {
+  if (e.target.classList.contains('sel-flag')) saveDraft();
+});
+$('selGridBody').addEventListener('click', e => {
+  const btn = e.target.closest('.rm-row');
+  if (btn) removeSelRow(Number(btn.dataset.rmSel));
+});
+
 $('submitBtn').addEventListener('click', submitBatch);
 
 $('tabEntry').addEventListener('click', () => showScreen('entry'));
@@ -1265,15 +1754,35 @@ $('reviewFormWrap').addEventListener('keydown', e => {
 });
 
 /* ---- stores tab wiring ---- */
-$('storesBody').addEventListener('input', e => {
-  if (e.target.classList.contains('sm-in')) updateRowSaveState(e.target.closest('tr'));
-});
-$('storesBody').addEventListener('change', e => {
-  if (e.target.classList.contains('sm-in')) updateRowSaveState(e.target.closest('tr'));
+$('storesFilter').addEventListener('input', () => {
+  SM.filterText = $('storesFilter').value;
+  renderStoresTable();
 });
 $('storesBody').addEventListener('click', e => {
-  const btn = e.target.closest('.sm-save');
-  if (btn) saveStoreRow(btn.closest('tr'));
+  const btn = e.target.closest('[data-edit]');
+  if (btn) openStoreModal(btn.dataset.edit);
+});
+$('addStoreBtn').addEventListener('click', () => openStoreModal(null));
+
+$('storeModalCloseBtn').addEventListener('click', closeStoreModal);
+$('smCancelBtn').addEventListener('click', closeStoreModal);
+$('smSaveBtn').addEventListener('click', saveStoreModal);
+// Click on the dim backdrop (not the panel itself) closes the modal.
+$('storeModalOverlay').addEventListener('click', e => {
+  if (e.target === $('storeModalOverlay')) closeStoreModal();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('storeModalOverlay').classList.contains('hidden')) closeStoreModal();
+});
+// A minimal focus trap: Tab/Shift+Tab cycles only within the panel while it is open.
+$('storeModalPanel').addEventListener('keydown', e => {
+  if (e.key !== 'Tab') return;
+  const list = [...$('storeModalPanel').querySelectorAll('input, select, textarea, button')]
+    .filter(el => !el.disabled);
+  if (!list.length) return;
+  const first = list[0], last = list[list.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 });
 
 /* ================= INIT ================= */
@@ -1285,6 +1794,7 @@ function init(){
   showScreen('entry');
   refreshStores();
   if (S.mode === 'barcode') { const ids = allRowIds(); if (ids.length) focusCell(ids[0], 'barcode'); }
+  else { const ids = allSelRowIds(); if (ids.length) focusSelCell(ids[0], 'brand'); }
 }
 init();
 </script>
