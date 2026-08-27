@@ -71,3 +71,45 @@ export function shouldAcceptScan(last, code, now, windowMs = SCAN_WINDOW_MS) {
   if (!last) return true;
   return !(last.code === code && now - last.at < windowMs);
 }
+
+/** Milliseconds an entry is held locally so it can be undone before it is sent. */
+export const UNDO_MS = 6000;
+
+/** Build the exact observation record the Apps Script backend expects. */
+export function buildObs({ obsId, ts, storeId, barcode, price, flag,
+                           by, source = "scan", newStore, newProduct }) {
+  const rec = {
+    type: "obs", obs_id: obsId, ts, store_id: storeId,
+    barcode: String(barcode), price, flag, source, by
+  };
+  if (newStore) rec.new_store = newStore;
+  if (newProduct) rec.new_product = newProduct;
+  return rec;
+}
+
+export function outboxAdd(outbox, rec, now) {
+  return [...outbox, { rec, at: now, state: "held" }];
+}
+
+/** Undo only ever cancels something still held. Once sending, it is gone. */
+export function outboxUndo(outbox, obsId) {
+  return outbox.filter(e => !(e.rec.obs_id === obsId && e.state === "held"));
+}
+
+/** Held entries whose undo window has expired and which should now be sent. */
+export function outboxDue(outbox, now, undoMs = UNDO_MS) {
+  return outbox.filter(e => e.state === "held" && now - e.at >= undoMs);
+}
+
+export function outboxMark(outbox, obsId, state) {
+  return outbox.map(e => e.rec.obs_id === obsId ? { ...e, state } : e);
+}
+
+export function outboxRemove(outbox, obsId) {
+  return outbox.filter(e => e.rec.obs_id !== obsId);
+}
+
+/** Everything not yet confirmed by the server — shown to the user as pending. */
+export function outboxPending(outbox) {
+  return outbox.length;
+}

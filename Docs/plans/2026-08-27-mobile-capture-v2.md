@@ -580,7 +580,7 @@ Expected: 10 tests pass.
 
 - [ ] **Step 5: Run the whole suite**
 
-Run: `node --test tests/`
+Run: `node --test tests/*.test.mjs`
 Expected: all tests from Tasks 1–4 pass.
 
 - [ ] **Step 6: Commit**
@@ -1726,7 +1726,7 @@ Create `Docs/SHOP-TEST-M1.md` holding the PRD §11 gate as a printable checklist
 
 - [ ] **Step 3: Run the full test suite**
 
-Run: `node --test tests/`
+Run: `node --test tests/*.test.mjs`
 Expected: every test from Tasks 1–4 passes.
 
 - [ ] **Step 4: Commit**
