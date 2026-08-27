@@ -118,3 +118,23 @@ export function rankStores(stores, query, limit = 8) {
     .slice(0, limit)
     .map(x => x.s);
 }
+
+/**
+ * EAN-13 / UPC-A / EAN-8 check digit. The desk workflow types 13 digits read off a shelf
+ * photo, where one wrong character silently creates a phantom product that nobody notices
+ * until the data is analysed. This catches most single-digit and transposition errors.
+ * Returns true for a valid code, false otherwise. Lengths we do not know are not judged —
+ * those return true, so an unusual but real code is never blocked.
+ */
+export function isValidBarcode(code) {
+  const d = String(code == null ? "" : code).replace(/\D/g, "");
+  if (![8, 12, 13].includes(d.length)) return true;
+  const body = d.slice(0, -1);
+  let sum = 0;
+  for (let i = 0; i < body.length; i++) {
+    // Weights alternate 3/1 counting from the rightmost body digit.
+    const weight = (body.length - i) % 2 === 1 ? 3 : 1;
+    sum += Number(body[i]) * weight;
+  }
+  return String((10 - (sum % 10)) % 10) === d[d.length - 1];
+}
