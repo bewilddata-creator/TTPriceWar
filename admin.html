@@ -124,8 +124,57 @@ table#grid tbody td{padding:3px 6px; border-bottom:1px solid var(--line)}
 #toast.show{opacity:1; transform:translateX(-50%)}
 #toast.err{background:var(--warn)}
 
+/* ---- review (เติมข้อมูลสินค้า) ---- */
+.rv-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px}
+.rv-count{font-size:13px; font-weight:700; color:var(--mut)}
+.rv-layout{display:grid; grid-template-columns:280px 1fr; gap:16px; align-items:start}
+.rv-sidebar{display:flex; flex-direction:column; gap:10px}
+.rv-list{display:flex; flex-direction:column; gap:6px; max-height:calc(100dvh - 260px); overflow-y:auto}
+.rv-row{display:flex; align-items:center; gap:10px; padding:8px; border:1px solid var(--line);
+  border-radius:10px; background:var(--card); text-align:left; width:100%}
+.rv-row:hover{background:var(--paper)}
+.rv-row.on{border-color:var(--ink); background:var(--paper)}
+.rv-thumb{width:38px; height:38px; border-radius:8px; object-fit:cover; flex:none; border:1px solid var(--line)}
+.rv-thumb-ph{width:38px; height:38px; border-radius:8px; background:var(--paper); border:1px solid var(--line); flex:none}
+.rv-meta{display:flex; flex-direction:column; gap:1px; min-width:0}
+.rv-item{font-size:13px; font-weight:700; color:var(--ink); white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; max-width:180px}
+.rv-code{font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--mut)}
+.rv-seen{font-size:10.5px; color:var(--mut)}
+.rv-formcard{border:1px solid var(--line); border-radius:var(--r); padding:16px;
+  display:flex; flex-direction:column; gap:14px}
+.rv-field{display:flex; flex-direction:column; gap:6px}
+.rv-grid2{display:grid; grid-template-columns:1fr 2fr; gap:14px}
+.rv-grid3{display:grid; grid-template-columns:repeat(3,1fr); gap:14px}
+.rv-imgrow{display:flex; gap:10px; align-items:center}
+.rv-filebtn{padding:12px 16px; border:1.5px solid var(--line); border-radius:11px; font-weight:700;
+  font-size:13.5px; white-space:nowrap; cursor:pointer}
+.rv-filebtn:hover{background:var(--paper)}
+.rv-preview{margin-top:4px}
+.rv-preview img{width:96px; height:96px; object-fit:cover; border-radius:10px; border:1px solid var(--line)}
+.rv-actions{display:flex; justify-content:flex-end; gap:10px}
+#rvSkipBtn{padding:13px 20px; border-radius:12px; font-weight:700; font-size:14px; color:var(--mut)}
+#rvSaveBtn{background:var(--ink); color:#fff; padding:13px 24px; border-radius:12px; font-weight:700; font-size:15px}
+#rvSaveBtn:disabled{opacity:.35; cursor:default}
+
+/* ---- stores (จัดการร้าน) ---- */
+.sm-note{font-size:13px; color:var(--mut); margin:6px 0 14px}
+.sm-scroll{overflow:auto; max-height:calc(100dvh - 260px)}
+table#storesTable{width:100%; border-collapse:collapse}
+table#storesTable thead th{position:sticky; top:0; background:var(--card); text-align:left;
+  font-size:11px; font-weight:700; letter-spacing:.6px; color:var(--mut); text-transform:uppercase;
+  padding:8px 10px; border-bottom:1px solid var(--line)}
+table#storesTable tbody td{padding:5px 8px; border-bottom:1px solid var(--line); vertical-align:middle}
+.sm-in{width:100%; padding:9px 10px; font-size:14px; font-weight:600; border:1.5px solid transparent;
+  border-radius:8px; background:transparent; color:var(--ink)}
+.sm-in:focus{outline:none; border-color:var(--ink); background:var(--paper)}
+.sm-id{font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--mut); white-space:nowrap}
+.sm-save{padding:9px 16px; border-radius:9px; font-weight:700; font-size:13px; background:var(--ink); color:#fff}
+.sm-save:disabled{opacity:.3; cursor:default}
+
 @media (max-width:900px){
   .split{grid-template-columns:1fr}
+  .rv-layout{grid-template-columns:1fr}
 }
 </style>
 </head>
@@ -217,11 +266,39 @@ table#grid tbody td{padding:3px 6px; border-bottom:1px solid var(--line)}
   </section>
 
   <section id="reviewScreen" class="card hidden">
-    <!-- เติมข้อมูลสินค้า — filled in separately -->
+    <div class="rv-head">
+      <div class="eyebrow" style="margin:0">เติมข้อมูลสินค้า</div>
+      <div class="rv-count" id="reviewCount">เหลือ 0 รายการ</div>
+    </div>
+    <div class="rv-layout">
+      <div class="rv-sidebar">
+        <input type="text" class="tin" id="reviewSearch" autocomplete="off" autocorrect="off"
+               spellcheck="false" placeholder="ค้นหาบาร์โค้ด / ยี่ห้อ / ชื่อสินค้า…">
+        <div class="rv-list" id="reviewList"><div class="empty-note">กำลังโหลด…</div></div>
+      </div>
+      <div class="rv-formcard" id="reviewFormWrap">
+        <div class="empty-note">เลือกสินค้าทางซ้ายเพื่อแก้ไข</div>
+      </div>
+    </div>
   </section>
 
   <section id="storesScreen" class="card hidden">
-    <!-- จัดการร้าน — filled in separately -->
+    <div class="eyebrow">จัดการร้าน</div>
+    <!-- Store CREATION happens from the phone during a visit (writeOne's new_store path in
+         code.gs) — this screen only edits rows that already exist. -->
+    <div class="sm-note">ร้านใหม่ถูกสร้างจากมือถือตอนลงพื้นที่สำรวจ — หน้านี้ใช้แก้ไขข้อมูลร้านที่มีอยู่แล้วเท่านั้น</div>
+    <div class="sm-scroll">
+      <table id="storesTable">
+        <colgroup>
+          <col><col style="width:140px"><col style="width:160px"><col>
+          <col style="width:110px"><col style="width:90px">
+        </colgroup>
+        <thead>
+          <tr><th>ชื่อร้าน</th><th>ภูมิภาค</th><th>ช่องทาง</th><th>หมายเหตุ</th><th>รหัสร้าน</th><th></th></tr>
+        </thead>
+        <tbody id="storesBody"><tr><td colspan="6" class="empty-note">กำลังโหลด…</td></tr></tbody>
+      </table>
+    </div>
   </section>
 
 </main>
@@ -229,7 +306,7 @@ table#grid tbody td{padding:3px 6px; border-bottom:1px solid var(--line)}
 <div id="toast"></div>
 
 <script type="module">
-import { makeId, normBarcode, priceValue, buildObs, rankStores, isValidBarcode } from "./core.js";
+import { makeId, normBarcode, priceValue, buildObs, rankStores, isValidBarcode, fuzzyScore } from "./core.js";
 
 /* ================= CONFIG ================= */
 const API_URL = "https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q-A3R6Fp45V42sBslG1AhZfQ_S3RyQGOg1Zp5toMgQtyaGg/exec";
@@ -652,6 +729,426 @@ async function submitBatch(){
   clearGridKeepStoreDate();
 }
 
+/* ================= REVIEW (เติมข้อมูลสินค้า) =================
+   Products captured in the field with no details, fetched lazily on the tab's first open (not
+   at page load — this list can run to hundreds of rows with images). needsinfo's `img` has the
+   CDN host replaced by "~" (see index.html's own lookup handling) — it must be expanded with
+   the payload's top-level `cdn` before it is usable as a src, or thumbnails silently 404. */
+const RV = {
+  loaded: false, loading: false, cdn: '',
+  items: [],                          // [{barcode, brand, item, sku, size, unit, c1, c2, c3, img, first_seen}]
+  vocab: { brands: [], tree: {} },
+  filterText: '', selectedBarcode: null,
+  baseline: null                      // the values loaded for the selected product, to diff on save
+};
+
+async function ensureReviewLoaded(){
+  if (RV.loaded || RV.loading) return;
+  RV.loading = true;
+  renderReviewList();
+  const [ni, vo] = await Promise.all([ api('?action=needsinfo&limit=300'), api('?action=vocab') ]);
+  RV.loading = false;
+  if (!ni.ok || !Array.isArray(ni.p)) {
+    toast('โหลดรายการค้างไม่สำเร็จ', true);
+    renderReviewList();
+    return;   // RV.loaded stays false so switching back to this tab retries
+  }
+  RV.items = ni.p;
+  RV.cdn = ni.cdn || '';
+  if (vo.ok) RV.vocab = { brands: vo.brands || [], tree: vo.tree || {} };
+  else toast('โหลดรายการยี่ห้อ/หมวดหมู่ไม่สำเร็จ', true);
+  RV.loaded = true;
+  selectProduct(RV.items.length ? RV.items[0].barcode : null);
+}
+
+function reviewImgSrc(p){ return p.img ? p.img.replace('~', RV.cdn || '') : ''; }
+
+function reviewFilteredItems(){
+  const q = RV.filterText.trim().toLowerCase();
+  if (!q) return RV.items;
+  return RV.items.filter(p =>
+    String(p.barcode).toLowerCase().includes(q) ||
+    String(p.brand || '').toLowerCase().includes(q) ||
+    String(p.item || '').toLowerCase().includes(q));
+}
+
+function renderReviewList(){
+  $('reviewCount').textContent = RV.loading ? 'กำลังโหลด…' : `เหลือ ${RV.items.length} รายการ`;
+  const wrap = $('reviewList');
+  if (RV.loading) { wrap.innerHTML = '<div class="empty-note">กำลังโหลด…</div>'; return; }
+  const items = reviewFilteredItems();
+  if (!items.length) {
+    wrap.innerHTML = `<div class="empty-note">${RV.items.length ? 'ไม่พบรายการที่ค้นหา' : 'ไม่มีรายการค้าง'}</div>`;
+    return;
+  }
+  wrap.innerHTML = items.map(p => {
+    const src = reviewImgSrc(p);
+    const thumb = src ? `<img class="rv-thumb" src="${esc(src)}" alt="">` : `<div class="rv-thumb-ph"></div>`;
+    const label = esc((p.item || '').trim() || '(ไม่มีชื่อ)');
+    return `<button type="button" class="rv-row${p.barcode === RV.selectedBarcode ? ' on' : ''}"
+        data-barcode="${esc(p.barcode)}">
+      ${thumb}
+      <span class="rv-meta">
+        <span class="rv-item">${label}</span>
+        <span class="rv-code">${esc(p.barcode)}</span>
+        <span class="rv-seen">${esc(p.first_seen || '')}</span>
+      </span>
+    </button>`;
+  }).join('');
+}
+
+/** Record what the form was loaded with, so save() can diff against it and send only the keys
+ *  the admin actually touched — an untouched key must never overwrite real data with blank. */
+function loadFormFor(p){
+  RV.baseline = {
+    brand: p.brand || '', item: p.item || '', sku: p.sku || '',
+    size: p.size != null ? String(p.size) : '', unit: p.unit || '',
+    category_1: p.c1 || '', category_2: p.c2 || '', category_3: p.c3 || '',
+    image_url: reviewImgSrc(p),
+    notes: ''   // needsinfo does not return notes; an untouched field then sends nothing, so
+                // existing notes (invisible to this form) are never clobbered.
+  };
+}
+
+function fillSelect(sel, options, value){
+  const opts = options.slice();
+  if (value && opts.indexOf(value) < 0) opts.unshift(value);   // preserve data not in the vocab tree
+  sel.innerHTML = '<option value="">—</option>' +
+    opts.map(o => `<option value="${esc(o)}"${o === value ? ' selected' : ''}>${esc(o)}</option>`).join('');
+}
+
+function populateCategorySelects(c1, c2, c3){
+  const tree = RV.vocab.tree || {};
+  fillSelect($('rvC1'), Object.keys(tree), c1);
+  const c2opts = (tree[c1] && typeof tree[c1] === 'object') ? Object.keys(tree[c1]) : [];
+  fillSelect($('rvC2'), c2opts, c2);
+  const c3opts = (tree[c1] && Array.isArray(tree[c1][c2])) ? tree[c1][c2] : [];
+  fillSelect($('rvC3'), c3opts, c3);
+}
+
+function onC1Change(){
+  // Changing the parent clears its children — a stale grandchild from the old branch must not linger.
+  populateCategorySelects($('rvC1').value, '', '');
+}
+function onC2Change(){
+  const tree = RV.vocab.tree || {};
+  const c1 = $('rvC1').value, c2 = $('rvC2').value;
+  const c3opts = (tree[c1] && Array.isArray(tree[c1][c2])) ? tree[c1][c2] : [];
+  fillSelect($('rvC3'), c3opts, '');
+}
+
+function reviewFormHtml(p){
+  if (!p) return '<div class="empty-note">เลือกสินค้าทางซ้ายเพื่อแก้ไข</div>';
+  const b = RV.baseline;
+  return `
+    <div class="rv-field">
+      <label class="eyebrow" for="rvBarcode">บาร์โค้ด</label>
+      <input type="text" class="tin" id="rvBarcode" value="${esc(p.barcode)}" readonly tabindex="-1">
+    </div>
+    <div class="rv-grid2">
+      <div class="rv-field combo">
+        <label class="eyebrow" for="rvBrand">ยี่ห้อ</label>
+        <input type="text" class="tin" id="rvBrand" autocomplete="off" autocorrect="off"
+               spellcheck="false" value="${esc(b.brand)}">
+        <div class="combo-list hidden" id="rvBrandDrop"></div>
+      </div>
+      <div class="rv-field">
+        <label class="eyebrow" for="rvItem">ชื่อสินค้า</label>
+        <input type="text" class="tin" id="rvItem" value="${esc(b.item)}">
+      </div>
+    </div>
+    <div class="rv-grid3">
+      <div class="rv-field">
+        <label class="eyebrow" for="rvSku">สี/เฉด/รุ่น</label>
+        <input type="text" class="tin" id="rvSku" value="${esc(b.sku)}">
+      </div>
+      <div class="rv-field">
+        <label class="eyebrow" for="rvSize">ขนาด</label>
+        <input type="number" step="any" inputmode="decimal" class="tin" id="rvSize" value="${esc(b.size)}">
+      </div>
+      <div class="rv-field">
+        <label class="eyebrow" for="rvUnit">หน่วย</label>
+        <input type="text" class="tin" id="rvUnit" value="${esc(b.unit)}">
+      </div>
+    </div>
+    <div class="rv-grid3">
+      <div class="rv-field">
+        <label class="eyebrow" for="rvC1">หมวดหมู่ 1</label>
+        <select class="tin" id="rvC1"></select>
+      </div>
+      <div class="rv-field">
+        <label class="eyebrow" for="rvC2">หมวดหมู่ 2</label>
+        <select class="tin" id="rvC2"></select>
+      </div>
+      <div class="rv-field">
+        <label class="eyebrow" for="rvC3">หมวดหมู่ 3</label>
+        <select class="tin" id="rvC3"></select>
+      </div>
+    </div>
+    <div class="rv-field">
+      <label class="eyebrow" for="rvImgUrl">รูปภาพ</label>
+      <div class="rv-imgrow">
+        <input type="text" class="tin" id="rvImgUrl" placeholder="วางลิงก์รูปภาพ…" value="${esc(b.image_url)}">
+        <label class="rv-filebtn" for="rvImgFile">อัปโหลดรูป…</label>
+        <input type="file" accept="image/*" id="rvImgFile" class="hidden">
+      </div>
+      <div class="rv-preview${b.image_url ? '' : ' hidden'}" id="rvPreviewWrap">
+        <img id="rvPreview" src="${esc(b.image_url)}" alt="">
+      </div>
+    </div>
+    <div class="rv-field">
+      <label class="eyebrow" for="rvNotes">หมายเหตุ</label>
+      <textarea class="tin" id="rvNotes" rows="2"></textarea>
+    </div>
+    <div class="rv-actions">
+      <button type="button" class="linkbtn" id="rvSkipBtn">ข้าม</button>
+      <button type="button" id="rvSaveBtn">บันทึก</button>
+    </div>
+  `;
+}
+
+function renderReviewForm(p){
+  $('reviewFormWrap').innerHTML = reviewFormHtml(p);
+  if (!p) return;
+  populateCategorySelects(RV.baseline.category_1, RV.baseline.category_2, RV.baseline.category_3);
+  const brandInp = $('rvBrand');
+  if (brandInp) brandInp.focus();   // ready to keep typing without touching the mouse
+}
+
+function selectProduct(barcode){
+  RV.selectedBarcode = barcode;
+  renderReviewList();
+  const p = barcode ? RV.items.find(x => x.barcode === barcode) : null;
+  if (p) loadFormFor(p);
+  renderReviewForm(p || null);
+}
+
+function renderBrandDrop(){
+  const input = $('rvBrand'), box = $('rvBrandDrop');
+  if (!input || !box) return;
+  const raw = input.value.trim();
+  const hits = RV.vocab.brands
+    .map(b => ({ b, score: fuzzyScore(b, raw) }))
+    .filter(x => x.score > 0)
+    .sort((a, c) => c.score - a.score || a.b.localeCompare(c.b))
+    .slice(0, 10);
+  box.innerHTML = '';
+  hits.forEach(x => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = x.b;
+    btn.addEventListener('click', () => { input.value = x.b; box.classList.add('hidden'); });
+    box.appendChild(btn);
+  });
+  box.classList.toggle('hidden', !hits.length);
+}
+
+function updateImgPreview(src){
+  const wrap = $('rvPreviewWrap'), img = $('rvPreview');
+  if (!wrap || !img) return;
+  img.src = src || '';
+  wrap.classList.toggle('hidden', !src);
+}
+
+const REVIEW_IMG_MAX = 600;
+
+/** Resize so the longest side is at most 600px, then re-encode as JPEG. Same draw-to-canvas
+ *  approach as the phone's own photo capture, just capped smaller — this is a reference shot
+ *  for a catalog entry, not a shelf-price proof photo. */
+function resizeImageFile(file){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('read failed'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('decode failed'));
+      img.onload = () => {
+        let w = img.naturalWidth, h = img.naturalHeight;
+        const longest = Math.max(w, h);
+        if (longest > REVIEW_IMG_MAX) {
+          const scale = REVIEW_IMG_MAX / longest;
+          w = Math.round(w * scale); h = Math.round(h * scale);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.8));
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function onImgFileChange(file){
+  if (!file || !RV.selectedBarcode) return;
+  const barcode = RV.selectedBarcode;
+  try {
+    const dataUrl = await resizeImageFile(file);
+    if (RV.selectedBarcode !== barcode) return;
+    updateImgPreview(dataUrl);   // instant feedback while the upload is in flight
+    const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ type: 'uploadImage', barcode, photo: dataUrl }) }, 20000);
+    const r = d.ok && Array.isArray(d.results) ? d.results[0] : null;
+    if (!r || r.status !== 'updated' || !r.url) { toast('อัปโหลดรูปไม่สำเร็จ', true); return; }
+    if (RV.selectedBarcode !== barcode) return;   // the admin moved to another item meanwhile
+    $('rvImgUrl').value = r.url;
+    RV.baseline.image_url = r.url;   // the server already has this — save() must not re-send it
+    updateImgPreview(r.url);
+    toast('อัปโหลดรูปแล้ว');
+  } catch (err) {
+    toast('อัปโหลดรูปไม่สำเร็จ', true);
+  }
+}
+
+/** Only the keys whose current value differs from what the form was loaded with — an absent
+ *  key must leave that Sheet cell untouched, per updateProduct's contract. */
+function collectReviewFields(){
+  const cur = {
+    brand: $('rvBrand').value.trim(), item: $('rvItem').value.trim(),
+    sku: $('rvSku').value.trim(), size: $('rvSize').value.trim(), unit: $('rvUnit').value.trim(),
+    category_1: $('rvC1').value, category_2: $('rvC2').value, category_3: $('rvC3').value,
+    image_url: $('rvImgUrl').value.trim(), notes: $('rvNotes').value.trim()
+  };
+  const fields = {};
+  Object.keys(cur).forEach(k => { if (cur[k] !== (RV.baseline[k] || '')) fields[k] = cur[k]; });
+  return fields;
+}
+
+async function saveReview(){
+  const p = RV.items.find(x => x.barcode === RV.selectedBarcode);
+  if (!p) return;
+  const fields = collectReviewFields();
+  const btn = $('rvSaveBtn');
+  if (btn) btn.disabled = true;
+  const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ type: 'updateProduct', barcode: p.barcode, fields, clear_needs_info: true }) }, 20000);
+  const r = d.ok && Array.isArray(d.results) ? d.results[0] : null;
+  if (!r || r.status !== 'updated') {
+    toast('บันทึกไม่สำเร็จ', true);
+    if (btn) btn.disabled = false;
+    return;
+  }
+  toast('บันทึกแล้ว');
+  const idx = RV.items.indexOf(p);
+  RV.items.splice(idx, 1);
+  const next = RV.items[idx] || RV.items[idx - 1] || null;
+  selectProduct(next ? next.barcode : null);
+}
+
+function skipReview(){
+  const p = RV.items.find(x => x.barcode === RV.selectedBarcode);
+  if (!p) return;
+  const idx = RV.items.indexOf(p);
+  const next = RV.items[idx + 1] || RV.items[idx - 1] || null;
+  selectProduct(next ? next.barcode : null);
+}
+
+/* ================= STORES (จัดการร้าน) =================
+   Store CREATION happens from the phone during a visit (see writeOne's new_store handling in
+   code.gs) — this screen only edits rows that already exist. No delete: removing a store would
+   orphan its observations, and viewdata drops rows whose store_id does not resolve, silently. */
+const SM = { loaded: false, loading: false, stores: [] };   // {id, storeName, region, channel, notes}
+
+async function ensureStoresLoaded(){
+  if (SM.loaded || SM.loading) return;
+  SM.loading = true;
+  renderStoresTable();
+  const d = await api('?action=stores');
+  SM.loading = false;
+  if (!d.ok || !Array.isArray(d.s)) {
+    toast('โหลดรายชื่อร้านไม่สำเร็จ', true);
+    renderStoresTable();
+    return;   // SM.loaded stays false so switching back to this tab retries
+  }
+  SM.stores = d.s.map(r => ({
+    id: String(r[0]), storeName: r[1] || '', region: r[2] || '', channel: r[3] || '', notes: ''
+    // GET ?action=stores does not return notes, so an untouched notes field sends nothing —
+    // it can never clobber a note it was never shown.
+  }));
+  SM.loaded = true;
+  renderStoresTable();
+}
+
+function channelOptionsHtml(current){
+  const opts = ['', 'TT', 'Border Export', 'Modern Trade'];
+  if (current && opts.indexOf(current) < 0) opts.push(current);   // preserve an unrecognised legacy value
+  return opts.map(c => `<option value="${esc(c)}"${c === current ? ' selected' : ''}>${c ? esc(c) : '—'}</option>`).join('');
+}
+
+function storeRowHtml(s){
+  return `<tr data-store="${esc(s.id)}">
+    <td><input type="text" class="tin sm-in" data-f="storeName" value="${esc(s.storeName)}"></td>
+    <td><input type="text" class="tin sm-in" data-f="region" value="${esc(s.region)}"></td>
+    <td><select class="tin sm-in" data-f="channel">${channelOptionsHtml(s.channel)}</select></td>
+    <td><input type="text" class="tin sm-in" data-f="notes" value="${esc(s.notes)}"></td>
+    <td class="sm-id">${esc(s.id)}</td>
+    <td><button type="button" class="sm-save" disabled>บันทึก</button></td>
+  </tr>`;
+}
+
+function renderStoresTable(){
+  const body = $('storesBody');
+  if (SM.loading) { body.innerHTML = '<tr><td colspan="6" class="empty-note">กำลังโหลด…</td></tr>'; return; }
+  if (!SM.stores.length) { body.innerHTML = '<tr><td colspan="6" class="empty-note">ยังไม่มีร้านค้า</td></tr>'; return; }
+  body.innerHTML = SM.stores.map(storeRowHtml).join('');
+}
+
+function storeRowValues(tr){
+  return {
+    storeName: tr.querySelector('[data-f="storeName"]').value.trim(),
+    region: tr.querySelector('[data-f="region"]').value.trim(),
+    channel: tr.querySelector('[data-f="channel"]').value,
+    notes: tr.querySelector('[data-f="notes"]').value.trim()
+  };
+}
+
+function updateRowSaveState(tr){
+  const orig = SM.stores.find(x => x.id === tr.dataset.store);
+  if (!orig) return;
+  const cur = storeRowValues(tr);
+  const changed = Object.keys(cur).some(k => cur[k] !== (orig[k] || ''));
+  tr.querySelector('.sm-save').disabled = !changed;
+}
+
+async function saveStoreRow(tr){
+  const orig = SM.stores.find(x => x.id === tr.dataset.store);
+  if (!orig) return;
+  const cur = storeRowValues(tr);
+  const fields = {};   // wire key is "store", not "storeName" — see updateStore's BE_KEYS in code.gs
+  if (cur.storeName !== (orig.storeName || '')) fields.store = cur.storeName;
+  if (cur.region !== (orig.region || '')) fields.region = cur.region;
+  if (cur.channel !== (orig.channel || '')) fields.channel = cur.channel;
+  if (cur.notes !== (orig.notes || '')) fields.notes = cur.notes;
+  if (!Object.keys(fields).length) return;
+
+  const btn = tr.querySelector('.sm-save');
+  btn.disabled = true;
+  const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ type: 'updateStore', store_id: orig.id, fields }) }, 20000);
+  const r = d.ok && Array.isArray(d.results) ? d.results[0] : null;
+
+  if (r && r.status === 'duplicate_name') {
+    // The whole write was refused before anything was touched — revert every field in the row,
+    // not just the name, or the screen shows unsaved values that look like they went through.
+    tr.querySelector('[data-f="storeName"]').value = orig.storeName;
+    tr.querySelector('[data-f="region"]').value = orig.region;
+    tr.querySelector('[data-f="channel"]').value = orig.channel;
+    tr.querySelector('[data-f="notes"]').value = orig.notes;
+    toast('ชื่อนี้ถูกใช้กับร้านอื่นแล้ว — ยังไม่ได้บันทึกการเปลี่ยนแปลง', true);
+    updateRowSaveState(tr);
+    return;
+  }
+  if (!r || r.status !== 'updated') {
+    toast('บันทึกไม่สำเร็จ', true);
+    updateRowSaveState(tr);
+    return;
+  }
+  Object.assign(orig, cur);
+  updateRowSaveState(tr);
+  toast('บันทึกแล้ว');
+}
+
 /* ================= MODE / TABS ================= */
 function setMode(mode, persist = true){
   S.mode = mode;
@@ -676,7 +1173,10 @@ function showScreen(which){
 $('storeInput').addEventListener('input', renderStoreDrop);
 $('storeInput').addEventListener('focus', renderStoreDrop);
 document.addEventListener('click', e => {
-  if (!e.target.closest('.combo')) $('storeDrop').classList.add('hidden');
+  if (!e.target.closest('.combo')) {
+    $('storeDrop').classList.add('hidden');
+    const bd = $('rvBrandDrop'); if (bd) bd.classList.add('hidden');
+  }
 });
 
 $('dateInput').addEventListener('change', saveDraft);
@@ -727,8 +1227,54 @@ $('unresolvedList').addEventListener('click', e => {
 $('submitBtn').addEventListener('click', submitBatch);
 
 $('tabEntry').addEventListener('click', () => showScreen('entry'));
-$('tabReview').addEventListener('click', () => showScreen('review'));
-$('tabStores').addEventListener('click', () => showScreen('stores'));
+$('tabReview').addEventListener('click', () => { showScreen('review'); ensureReviewLoaded(); });
+$('tabStores').addEventListener('click', () => { showScreen('stores'); ensureStoresLoaded(); });
+
+/* ---- review tab wiring ---- */
+$('reviewSearch').addEventListener('input', () => {
+  RV.filterText = $('reviewSearch').value;
+  renderReviewList();
+});
+$('reviewList').addEventListener('click', e => {
+  const btn = e.target.closest('.rv-row');
+  if (btn) selectProduct(btn.dataset.barcode);
+});
+// The form is rebuilt (innerHTML) on every product switch, so its listeners are delegated on
+// the wrapper — which never itself gets replaced — instead of rebound after each render.
+$('reviewFormWrap').addEventListener('input', e => {
+  if (e.target.id === 'rvBrand') renderBrandDrop();
+  else if (e.target.id === 'rvImgUrl') updateImgPreview(e.target.value.trim());
+});
+$('reviewFormWrap').addEventListener('focus', e => {
+  if (e.target.id === 'rvBrand') renderBrandDrop();
+}, true);   // focus does not bubble — must be captured
+$('reviewFormWrap').addEventListener('change', e => {
+  if (e.target.id === 'rvC1') onC1Change();
+  else if (e.target.id === 'rvC2') onC2Change();
+  else if (e.target.id === 'rvImgFile') { onImgFileChange(e.target.files[0]); e.target.value = ''; }
+});
+$('reviewFormWrap').addEventListener('click', e => {
+  if (e.target.id === 'rvSaveBtn') saveReview();
+  else if (e.target.id === 'rvSkipBtn') skipReview();
+});
+$('reviewFormWrap').addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    if (RV.selectedBarcode) saveReview();
+  }
+});
+
+/* ---- stores tab wiring ---- */
+$('storesBody').addEventListener('input', e => {
+  if (e.target.classList.contains('sm-in')) updateRowSaveState(e.target.closest('tr'));
+});
+$('storesBody').addEventListener('change', e => {
+  if (e.target.classList.contains('sm-in')) updateRowSaveState(e.target.closest('tr'));
+});
+$('storesBody').addEventListener('click', e => {
+  const btn = e.target.closest('.sm-save');
+  if (btn) saveStoreRow(btn.closest('tr'));
+});
 
 /* ================= INIT ================= */
 function init(){
