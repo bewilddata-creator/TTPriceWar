@@ -46,8 +46,10 @@ export function shouldAcceptScan(last, code, now, windowMs = SCAN_WINDOW_MS) {
   return !(last.code === code && now - last.at < windowMs);
 }
 
-/** Milliseconds an entry is held locally so it can be undone before it is sent. */
-export const UNDO_MS = 6000;
+/** Milliseconds an entry is held locally so it can be undone before it is sent.
+ *  15s: long enough to notice a mistyped price and act, short enough that a shop's
+ *  worth of rows is not still sitting on the phone when the trip ends. */
+export const UNDO_MS = 15000;
 
 /** Build the exact observation record the Apps Script backend expects. */
 export function buildObs({ obsId, ts, storeId, barcode, price, flag,

@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#17191C">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Price Scout">
 <title>Price Scout</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -153,6 +158,31 @@ main{flex:1; padding:12px; display:flex; flex-direction:column; gap:10px; paddin
 .pad button:active{background:var(--line)}
 .pad .fn{font-size:19px; color:var(--mut)}
 
+/* session log — one horizontal card per captured price */
+#logList{display:flex; flex-direction:column; gap:8px}
+.logcard{background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+  box-shadow:var(--shadow); padding:10px; display:flex; align-items:center; gap:10px}
+.logcard img{width:46px; height:46px; object-fit:cover; border-radius:9px; flex:none;
+  border:1px solid var(--line); background:var(--paper)}
+.logcard .mid{min-width:0; flex:1}
+.logcard .nm{font-size:14.5px; font-weight:700; line-height:1.2;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.logcard .sub{font-size:11.5px; color:var(--mut); font-family:'IBM Plex Mono',monospace;
+  margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.logcard .amt2{font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:17px; flex:none}
+.logcard.promo .amt2{color:var(--amber)}
+.logcard.short_shelf_life .amt2{color:var(--warn)}
+.logcard .act{flex:none; min-width:64px; text-align:right}
+.undo{background:var(--warn); color:#fff; border-radius:99px; padding:8px 12px;
+  font-size:12.5px; font-weight:700; white-space:nowrap}
+.sent{font-size:11.5px; font-weight:600; color:var(--mut)}
+.sent.queued{color:var(--amber)}
+#logBadge{position:absolute; transform:translate(16px,-9px); background:var(--tag);
+  color:var(--tag-ink); border-radius:99px; font-size:10px; font-weight:800;
+  padding:1px 5px; min-width:16px}
+#logBadge:empty{display:none}
+.tab{position:relative}
+
 .statgrid{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; text-align:center}
 .statgrid .lab{display:block; font-size:11px; font-weight:700; letter-spacing:.6px;
   color:var(--mut); text-transform:uppercase}
@@ -284,6 +314,13 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
 
   </section>
 
+  <section id="logScreen" class="hidden">
+    <div class="card" id="logEmpty">
+      <div style="color:var(--mut);font-size:14px">ยังไม่มีรายการในรอบนี้</div>
+    </div>
+    <div id="logList"></div>
+  </section>
+
   <section id="searchScreen" class="hidden">
 
     <div class="card">
@@ -337,6 +374,7 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
 <footer>
   <button class="tab on" id="tabCapture"><span class="ic">▣</span>เก็บราคา</button>
   <button class="tab" id="tabSearch"><span class="ic">⌕</span>ค้นหาราคา</button>
+  <button class="tab" id="tabLog"><span class="ic">☰</span>รายการ<span id="logBadge"></span></button>
 </footer>
 
 <div id="toast"></div>
@@ -353,7 +391,7 @@ const NET_TIMEOUT = 12000;
 
 /* ================= STATE ================= */
 const S = { store:null, storeId:null, newStore:null, stores:[], recent:[],
-            tab:"capture", code:null, product:null, isNew:false, photo:null,
+            tab:"capture", cdn:"", code:null, product:null, isNew:false, photo:null,
             price:"", flag:"normal", count:0 };
 
 const $ = id => document.getElementById(id);
@@ -408,6 +446,7 @@ async function lookupBarcode(code){
   if (lookupCache.has(key)) return lookupCache.get(key);
   const d = await api(`?action=lookup&barcode=${encodeURIComponent(code)}`);
   if (!d.ok) return { pending: true };   // offline: unknown, not "new"
+  if (d.cdn) S.cdn = d.cdn;
   lookupCache.set(key, d);               // keep the WHOLE payload — cdn included
   return d;
 }
@@ -699,6 +738,10 @@ function saveObservation(){
   OUTBOX = outboxAdd(OUTBOX, rec, Date.now());
   persistOutbox();
   S.count++;
+  const nm = S.product ? [S.product.brand, S.product.item, S.product.sku].filter(Boolean).join(' ')
+                       : ($('newItem').value.trim() || S.code);
+  const im = S.product && S.product.img ? S.product.img.replace('~', S.cdn || '') : '';
+  logAdd(rec, nm, im);
   renderPending();
   toast(`บันทึกแล้ว · ${fmtPrice(price)}`);
   resetItem();
@@ -736,7 +779,7 @@ async function flushOutbox(force){
     ids.forEach(id => { OUTBOX = outboxMark(OUTBOX, id, 'queued'); });
   }
   flushing = false;
-  persistOutbox(); renderPending();
+  persistOutbox(); renderPending(); renderLog();
 }
 
 setInterval(() => flushOutbox(false), 2000);
@@ -853,18 +896,95 @@ async function qLookup(code){
   }).join('');
 }
 
+/* ================= SESSION LOG =================
+   Everything captured this trip, newest first. A row can be cancelled only while it is still
+   held locally (UNDO_MS); once sent it is in the Sheet, and the API has no delete — saying
+   otherwise would be a lie the user finds out about later. */
+let SESSION = ls.get('ps_session', []);
+const saveSession = () => ls.set('ps_session', SESSION.slice(0, 100));
+
+function logAdd(rec, name, img){
+  SESSION.unshift({ id: rec.obs_id, at: rec.ts, barcode: rec.barcode, name: name || rec.barcode,
+                    img: img || '', price: rec.price, flag: rec.flag, store: S.store });
+  SESSION = SESSION.slice(0, 100);
+  saveSession(); renderLog();
+}
+
+const hhmm = iso => { const d = new Date(iso);
+  return isNaN(d) ? '' : String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0'); };
+
+/** State of one logged row inside the outbox, if it is still there at all. */
+function outboxState(id){
+  const e = OUTBOX.find(x => x.rec.obs_id === id);
+  return e ? e.state : 'sent';
+}
+
+function renderLog(){
+  const list = $('logList');
+  $('logEmpty').classList.toggle('hidden', SESSION.length > 0);
+  const now = Date.now();
+  list.innerHTML = SESSION.map(r => {
+    const st = outboxState(r.id);
+    const held = st === 'held';
+    const left = held ? Math.max(0, Math.ceil((new Date(r.at).getTime() + UNDO_MS - now) / 1000)) : 0;
+    const act = held
+      ? `<button class="undo" data-undo="${esc(r.id)}">ยกเลิก ${left}</button>`
+      : `<span class="sent${st === 'queued' ? ' queued' : ''}">${st === 'queued' ? 'รอส่ง' : st === 'sending' ? 'กำลังส่ง' : 'ส่งแล้ว'}</span>`;
+    return `<div class="logcard ${esc(r.flag)}">
+      ${r.img ? `<img src="${esc(r.img)}" alt="" onerror="this.style.visibility='hidden'">` : ''}
+      <div class="mid">
+        <div class="nm">${esc(r.name)}</div>
+        <div class="sub">${esc(hhmm(r.at))} · ${esc(r.store || '')} · ${esc(r.barcode)}</div>
+      </div>
+      <div class="amt2">${esc(fmtPrice(r.price))}</div>
+      <div class="act">${act}</div>
+    </div>`;
+  }).join('');
+
+  const pending = OUTBOX.length;
+  $('logBadge').textContent = pending ? String(pending) : '';
+}
+
+function undoEntry(id){
+  const before = OUTBOX.length;
+  OUTBOX = outboxUndo(OUTBOX, id);
+  if (OUTBOX.length === before){
+    toast('ส่งไปแล้ว — แก้ใน Sheet', true);   // honest: there is no delete endpoint
+    renderLog(); return;
+  }
+  persistOutbox();
+  SESSION = SESSION.filter(r => r.id !== id);
+  saveSession();
+  S.count = Math.max(0, S.count - 1);
+  renderPending(); renderLog();
+  toast('ยกเลิกรายการแล้ว');
+}
+
+$('logList').addEventListener('click', e => {
+  const id = e.target.dataset && e.target.dataset.undo;
+  if (id) undoEntry(id);
+});
+
+// Tick only while something is still cancellable, so the countdown stays honest.
+setInterval(() => {
+  if (S.tab === 'log' && OUTBOX.some(e => e.state === 'held')) renderLog();
+}, 1000);
+
 /* ================= TABS ================= */
 function showTab(which){
   S.tab = which;
   // Two viewfinders cannot share one camera — release the other tab's before switching.
-  if (which === 'search' && camOn) stopCam(false);
-  if (which === 'capture' && qCamOn) qStopCam();
+  if (which !== 'capture' && camOn) stopCam(false);
+  if (which !== 'search' && qCamOn) qStopCam();
   const needsStore = !S.storeId && which === 'capture';
   $('storeScreen').classList.toggle('hidden', !needsStore);
   $('captureScreen').classList.toggle('hidden', needsStore || which !== 'capture');
   $('searchScreen').classList.toggle('hidden', which !== 'search');
+  $('logScreen').classList.toggle('hidden', which !== 'log');
+  if (which === 'log') renderLog();
   $('tabCapture').classList.toggle('on', which === 'capture');
   $('tabSearch').classList.toggle('on', which === 'search');
+  $('tabLog').classList.toggle('on', which === 'log');
   // ค้นหาราคา is not scoped to a store — it reports every shop. Showing the capture store
   // in the header there would imply otherwise.
   $('storeChip').classList.toggle('hidden', which === 'search');
@@ -911,6 +1031,7 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Enter' && priceValue(S.price) !== null) saveObservation();
 });
 $('tabSearch').addEventListener('click', () => showTab('search'));
+$('tabLog').addEventListener('click', () => showTab('log'));
 $('qCode').addEventListener('keydown', e => { if (e.key === 'Enter') qLookup(e.target.value); });
 $('qCamBtn').addEventListener('click', () => qCamOn ? qStopCam() : qStartCam());
 document.addEventListener('click', e => {
@@ -931,6 +1052,7 @@ function init(){
 
   setStatus('พร้อมใช้งาน');
   renderPending();
+  renderLog();
   if (S.storeId && ls.get('ps_cam', false)) startCam();
   refreshStores();
   flushOutbox(true);
