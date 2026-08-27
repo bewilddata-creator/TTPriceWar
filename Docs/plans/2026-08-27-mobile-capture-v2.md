@@ -891,22 +891,27 @@ The agent cannot deploy this. Tell the user, in these words:
 ```bash
 BASE="https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q-A3R6Fp45V42sBslG1AhZfQ_S3RyQGOg1Zp5toMgQtyaGg/exec"
 
+# curl MUST use -L and MUST NOT use -X POST. /exec answers a POST with a 302; a browser's
+# fetch downgrades to GET when following it, and curl only does the same if the method was
+# not forced. With -X POST (or --post302) curl re-POSTs to the redirect target and Google
+# answers with an HTML "ไม่พบเพจ" page — while doPost has ALREADY run and written the row.
+
 # delta at the current high-water mark returns nothing new, and reports that mark
-SEQ=$(curl -s "$BASE?action=bootstrap" | python3 -c "import json,sys; print(json.load(sys.stdin)['seq'])")
+SEQ=$(curl -sL --max-time 120 "$BASE?action=bootstrap" | python3 -c "import json,sys; print(json.load(sys.stdin)['seq'])")
 echo "current seq: $SEQ"
-curl -s "$BASE?action=delta&after_seq=$SEQ" | head -c 200
+curl -sL --max-time 120 "$BASE?action=delta&after_seq=$SEQ" | head -c 200
 
 # bootstrap now carries 7 fields per product, size and unit last
-curl -s "$BASE?action=bootstrap" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['p'][0]), d['p'][0])"
+curl -sL --max-time 120 "$BASE?action=bootstrap" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['p'][0]), d['p'][0])"
 
 # idempotency: the same obs_id twice must write exactly one row
 ID="O-TEST$RANDOM"
 BODY="{\"type\":\"obs\",\"obs_id\":\"$ID\",\"ts\":\"2026-08-27T10:00:00.000Z\",\"store_id\":\"S-XAJI0Y\",\"barcode\":\"8857128940075\",\"price\":1,\"flag\":\"normal\",\"source\":\"manual\",\"by\":\"test\"}"
-curl -s -X POST -H "Content-Type: text/plain" -d "$BODY" "$BASE"; echo
-curl -s -X POST -H "Content-Type: text/plain" -d "$BODY" "$BASE"; echo
+curl -sL --max-time 90 -H "Content-Type: text/plain" -d "$BODY" "$BASE"; echo
+curl -sL --max-time 90 -H "Content-Type: text/plain" -d "$BODY" "$BASE"; echo
 
 # an unknown type must now report failure instead of silently succeeding
-curl -s -X POST -H "Content-Type: text/plain" -d '{"type":"nonsense"}' "$BASE"; echo
+curl -sL --max-time 90 -H "Content-Type: text/plain" -d '{"type":"nonsense"}' "$BASE"; echo
 ```
 
 Expected: `seq` is 26289, `delta` returns `{"ok":true,"seq":26289,"p":[]}`, and bootstrap rows have
@@ -919,7 +924,7 @@ This is the whole point of the `seq` column, so verify it rather than assume it.
 
 1. In the Sheet, sort the **Products** tab by column B (brand), ascending — a realistic thing for
    someone to do while looking something up
-2. Re-run `curl -s "$BASE?action=delta&after_seq=$SEQ"` — it must still return `"p":[]`, not a pile
+2. Re-run `curl -sL --max-time 120 "$BASE?action=delta&after_seq=$SEQ"` — it must still return `"p":[]`, not a pile
    of rows it now believes are new
 3. Sort the **Observations** tab by column E (price) and re-POST the duplicate `obs_id` from Step 6 —
    it must still answer `"status":"duplicate"`
