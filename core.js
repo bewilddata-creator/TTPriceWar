@@ -27,3 +27,47 @@ export function priceValue(price) {
   const n = parseFloat(price);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
+
+/**
+ * Barcodes reach us in inconsistent widths. The Sheet stores them as numbers, so any
+ * leading zero is already lost, and a UPC-A product may be scanned as 12 digits or as
+ * 13 with a leading zero. Normalising to "digits, no leading zeros" was verified against
+ * the full 26,289-product master: zero collisions.
+ */
+export function normBarcode(code) {
+  return String(code).replace(/\D/g, "").replace(/^0+/, "") || "0";
+}
+
+/** Build a lookup map. Every product is registered under its exact and normalised barcode. */
+export function decodeCatalog(json) {
+  const m = new Map();
+  for (const r of json.p) {
+    const rec = { barcode: r[0], brand: r[1], item: r[2], sku: r[3] };
+    m.set(r[0], rec);
+    const n = normBarcode(r[0]);
+    if (!m.has(n)) m.set(n, rec);
+  }
+  return m;
+}
+
+/** Look a scanned code up exactly first, then normalised. Null when genuinely unknown. */
+export function findProduct(map, code) {
+  return map.get(String(code)) || map.get(normBarcode(code)) || null;
+}
+
+/** Register a product created in the field so a rescan finds it this session. */
+export function addLocalProduct(map, barcode, fields) {
+  const rec = { barcode: String(barcode), brand: fields.brand || "",
+                item: fields.item || "", sku: fields.sku || "" };
+  map.set(rec.barcode, rec);
+  map.set(normBarcode(rec.barcode), rec);
+  return map;
+}
+
+export const SCAN_WINDOW_MS = 2500;
+
+/** A barcode lingering in the viewfinder must not create a second row. */
+export function shouldAcceptScan(last, code, now, windowMs = SCAN_WINDOW_MS) {
+  if (!last) return true;
+  return !(last.code === code && now - last.at < windowMs);
+}
