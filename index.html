@@ -7,6 +7,7 @@
 <title>Price Scout</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -43,6 +44,21 @@ main{flex:1; padding:12px; display:flex; flex-direction:column; gap:10px; paddin
 #fold .pad{flex:1; align-content:stretch}
 #fold .pad button{padding:0; min-height:44px}
 #belowFold{display:flex; flex-direction:column; gap:10px}
+
+/* The viewfinder is large while hunting for a barcode and shrinks to a strip once an item
+   is up, so the keypad and save button stay above the fold while the price is typed.
+   A phone cannot show a full viewfinder AND a full keypad at once; this is the trade. */
+#reader{border-radius:12px; overflow:hidden; background:#000; margin-top:8px;
+  height:190px; transition:height .18s ease}
+#captureScreen.has-item #reader{height:84px}
+#reader video{width:100%!important; height:100%!important; object-fit:cover}
+#reader img[alt="Info icon"], #reader__dashboard{display:none!important}
+.scan-btn.on{background:var(--warn)}
+.torch{position:absolute; top:8px; right:8px; z-index:5; background:rgba(23,25,28,.72);
+  color:#fff; border-radius:99px; width:38px; height:38px; font-size:17px; display:grid;
+  place-items:center}
+.torch.on{background:var(--tag); color:var(--tag-ink)}
+.readerwrap{position:relative}
 .card{background:var(--card); border:1px solid var(--line); border-radius:var(--r);
   box-shadow:var(--shadow); padding:14px}
 .eyebrow{font-size:11px; font-weight:700; letter-spacing:1px; color:var(--mut);
@@ -199,7 +215,10 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
                placeholder="สแกน หรือพิมพ์เลข…" autocomplete="off">
         <button class="scan-btn" id="camBtn" title="เปิดกล้อง">▣</button>
       </div>
-      <div id="reader" class="hidden" style="margin-top:10px;border-radius:12px;overflow:hidden"></div>
+      <div class="readerwrap hidden" id="readerWrap">
+        <div id="reader"></div>
+        <button class="torch hidden" id="torchBtn" title="ไฟฉาย">☀</button>
+      </div>
     </div>
 
     <div class="card hit hidden" id="hitCard">
@@ -285,7 +304,7 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
 <div id="toast"></div>
 
 <script type="module">
-import { makeId, normBarcode, priceKey, priceValue, buildObs,
+import { makeId, normBarcode, priceKey, priceValue, buildObs, shouldAcceptScan,
          outboxAdd, outboxUndo, outboxDue, outboxMark, outboxRemove,
          outboxPending, UNDO_MS } from "./core.js";
 
@@ -447,6 +466,7 @@ async function onScan(raw){
 
   // The price card opens IMMEDIATELY. The lookup runs behind it, so the keypad is
   // never waiting on the network — that round trip lands in the gap while you type.
+  $('captureScreen').classList.add('has-item');   // shrink the viewfinder, keep the keypad up
   $('priceCard').classList.remove('hidden');
   $('hitCard').classList.remove('hidden');
   $('hitBrand').textContent = '';
@@ -532,10 +552,85 @@ function resetItem(clearCode = true){
   S.code = null; S.product = null; S.isNew = false; S.photo = null;
   S.price = ''; renderPrice(); setFlag('normal');
   if (clearCode) $('codeInput').value = '';
+  $('captureScreen').classList.remove('has-item');
   ['hitCard','missCard','priceCard','pricesCard'].forEach(id => $(id).classList.add('hidden'));
   $('photoThumb').classList.add('hidden');
   $('newItem').value = '';
 }
+
+/* ================= CAMERA =================
+   Modelled on the lite app, which is proven on this phone: html5-qrcode 2.3.8, fps 10, and a
+   WIDE qrbox — an EAN-13 is a wide barcode and a square box finds it far less reliably.
+   The one deliberate difference: the camera is NOT stopped when a code is found. The lite
+   version called stopCam() on every hit and paid a cold start on the next item; here it runs
+   continuously, so a shelf can be worked without touching the screen between products. */
+let cam = null, camOn = false, lastScan = null, torchOn = false;
+
+async function startCam(){
+  if (camOn) return;
+  if (typeof Html5Qrcode === 'undefined'){ toast('โหลดตัวสแกนไม่สำเร็จ — พิมพ์เลขแทน', true); return; }
+  $('readerWrap').classList.remove('hidden');
+  cam = new Html5Qrcode('reader', { verbose:false });
+  try {
+    await cam.start({ facingMode: 'environment' },
+                    { fps: 10, qrbox: { width: 250, height: 120 } },
+                    onDetected, () => {});
+    camOn = true;
+    $('camBtn').classList.add('on');
+    ls.set('ps_cam', true);            // reopen automatically next time
+    setTimeout(showTorchIfAvailable, 600);
+  } catch (e) {
+    $('readerWrap').classList.add('hidden');
+    cam = null;
+    toast('เปิดกล้องไม่ได้ — พิมพ์เลขแทน', true);
+    $('codeInput').focus();
+  }
+}
+
+async function stopCam(remember){
+  if (cam && camOn) { try { await cam.stop() } catch(e) {} }
+  try { if (cam) cam.clear() } catch(e) {}
+  cam = null; camOn = false; torchOn = false;
+  $('readerWrap').classList.add('hidden');
+  $('camBtn').classList.remove('on');
+  $('torchBtn').classList.add('hidden');
+  $('torchBtn').classList.remove('on');
+  if (remember) ls.set('ps_cam', false);
+}
+
+/** Every detection funnels through here, so de-duplication applies however a code arrives. */
+function onDetected(text){
+  const code = String(text || '').trim();
+  if (!code) return;
+  const now = Date.now();
+  // A barcode sitting in the viewfinder fires continuously — one row per product, not per frame.
+  if (!shouldAcceptScan(lastScan, code, now)) return;
+  lastScan = { code, at: now };
+  if (navigator.vibrate) navigator.vibrate(35);
+  onScan(code);
+}
+
+function showTorchIfAvailable(){
+  try {
+    const caps = cam && cam.getRunningTrackCapabilities ? cam.getRunningTrackCapabilities() : null;
+    if (caps && caps.torch) $('torchBtn').classList.remove('hidden');
+  } catch (e) { /* no torch on this device */ }
+}
+
+async function toggleTorch(){
+  if (!cam) return;
+  try {
+    torchOn = !torchOn;
+    await cam.applyVideoConstraints({ advanced: [{ torch: torchOn }] });
+    $('torchBtn').classList.toggle('on', torchOn);
+  } catch (e) { toast('เครื่องนี้เปิดไฟฉายไม่ได้', true); torchOn = false; }
+}
+
+// Release the camera when the app is backgrounded; bring it back on return.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (camOn) stopCam(false); }
+  else if (S.storeId && S.tab === 'capture' && ls.get('ps_cam', false)) startCam();
+});
 
 /* ================= SAVE / OUTBOX =================
    A saved row is HELD locally for a few seconds before it is sent, so it can be undone —
@@ -647,6 +742,8 @@ $('missKeep').addEventListener('click', () => {
 });
 $('missDiscard').addEventListener('click', () => { resetItem(); $('codeInput').focus(); });
 $('saveBtn').addEventListener('click', saveObservation);
+$('camBtn').addEventListener('click', () => camOn ? stopCam(true) : startCam());
+$('torchBtn').addEventListener('click', toggleTorch);
 
 // Physical keyboard: the laptop is a real capture device too.
 document.addEventListener('keydown', e => {
@@ -675,6 +772,7 @@ function init(){
 
   setStatus('พร้อมใช้งาน');
   renderPending();
+  if (S.storeId && ls.get('ps_cam', false)) startCam();
   refreshStores();
   flushOutbox(true);
 }
