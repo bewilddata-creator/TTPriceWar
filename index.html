@@ -62,6 +62,74 @@ main{flex:1; padding:14px; display:flex; flex-direction:column; gap:12px; paddin
 .big-btn.tag{background:var(--tag); color:var(--tag-ink)}
 .big-btn:active{transform:scale(.985)}
 
+/* ---- capture ---- */
+.code-row{display:flex; gap:8px}
+.code-row input{flex:1; padding:14px; font-size:19px; letter-spacing:1px; min-width:0;
+  border:1.5px solid var(--line); border-radius:12px; background:var(--paper);
+  font-family:'IBM Plex Mono',monospace; font-weight:600}
+.code-row input:focus{outline:none; border-color:var(--ink)}
+.scan-btn{flex:none; width:56px; border-radius:12px; background:var(--ink); color:#fff;
+  font-size:22px; display:grid; place-items:center}
+
+.hit{border-left:5px solid var(--ok); background:var(--ok-bg); display:flex; gap:12px; align-items:flex-start}
+.hit img{width:64px; height:64px; object-fit:cover; border-radius:10px; background:#fff;
+  border:1px solid var(--line); flex:none}
+.hit .brand{font-size:12px; font-weight:700; color:var(--ok); letter-spacing:.5px; text-transform:uppercase}
+.hit .name{font-size:16.5px; font-weight:700; line-height:1.25}
+.hit .sku{font-size:13.5px; color:var(--mut); font-weight:600}
+.hit .size{font-size:12.5px; color:var(--mut); font-family:'IBM Plex Mono',monospace}
+
+.prices{margin-top:10px; border-top:1px solid var(--line); padding-top:9px}
+.prices .row{display:flex; align-items:baseline; gap:8px; padding:4px 0; font-size:13.5px}
+.prices .row .st{font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.prices .row .dt{color:var(--mut); font-size:11.5px; font-family:'IBM Plex Mono',monospace}
+.prices .row .pr{margin-left:auto; font-family:'IBM Plex Mono',monospace; font-weight:700}
+.prices .row.promo .pr{color:var(--amber)}
+.prices .row.short_shelf_life .pr{color:var(--warn)}
+.prices .none{font-size:13px; color:var(--mut)}
+
+.miss{border-left:5px solid var(--amber); background:var(--amber-bg)}
+.miss .headline{font-weight:700; color:var(--amber); font-size:15px; margin-bottom:4px}
+.miss .sub{font-size:12.5px; color:var(--mut); margin-bottom:10px}
+.miss .tin{background:#fff; margin-top:8px; font-size:15px; padding:11px}
+.miss-actions{display:flex; gap:8px; margin-top:10px}
+.miss-actions button{flex:1; padding:11px; border-radius:10px; font-weight:700; font-size:14px;
+  border:1.5px solid var(--line); background:#fff}
+.miss-actions .keep{background:var(--ink); color:#fff; border-color:var(--ink)}
+
+.chip-btn{padding:11px; border-radius:10px; border:1.5px solid var(--line); background:#fff;
+  font-weight:600; font-size:14px}
+.photo-thumb{margin-top:10px; display:flex; align-items:center; gap:10px}
+.photo-thumb img{width:52px; height:52px; object-fit:cover; border-radius:8px; border:1px solid var(--line)}
+.photo-thumb .rm{color:var(--warn); font-weight:700; font-size:13px}
+
+.tag-wrap{display:flex; justify-content:center; padding:4px 0 2px}
+.price-tag{position:relative; background:var(--tag); color:var(--tag-ink); border-radius:10px;
+  padding:10px 26px 12px; min-width:190px; text-align:center;
+  box-shadow:0 3px 0 var(--tag-deep), var(--shadow)}
+.price-tag::before{content:""; position:absolute; left:10px; top:50%; transform:translateY(-50%);
+  width:9px; height:9px; border-radius:99px; background:var(--paper);
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.25)}
+.price-tag .cur{font-size:14px; font-weight:700; vertical-align:top; margin-right:2px}
+.price-tag .amt{font-family:'IBM Plex Mono',monospace; font-size:40px; font-weight:700; line-height:1}
+.price-tag .amt.empty{opacity:.35}
+.price-tag .lbl{font-size:10.5px; font-weight:700; letter-spacing:1.5px; opacity:.75; margin-top:2px}
+
+.flags{display:flex; gap:8px; margin:10px 0 4px}
+.flags .chip-btn{flex:1; font-size:13px; padding:9px 6px}
+.flags .chip-btn.on{border-color:var(--ink); background:var(--ink); color:#fff}
+.flags .chip-btn.on.exp{background:var(--warn); border-color:var(--warn)}
+.flags .chip-btn.on.promo{background:var(--amber); border-color:var(--amber)}
+
+.pad{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:8px}
+.pad button{padding:15px 0; font-size:23px; font-weight:600; background:var(--paper);
+  border:1px solid var(--line); border-radius:12px; font-family:'IBM Plex Mono',monospace}
+.pad button:active{background:var(--line)}
+.pad .fn{font-size:19px; color:var(--mut)}
+
+.linkbtn{background:none; color:var(--mut); font-size:12.5px; font-weight:600;
+  text-decoration:underline; padding:2px 0}
+
 #toast{position:fixed; left:50%; bottom:80px; transform:translateX(-50%) translateY(20px);
   background:var(--ink); color:#fff; padding:11px 20px; border-radius:99px; font-weight:600;
   font-size:14px; opacity:0; pointer-events:none; transition:.25s; z-index:50; white-space:nowrap}
@@ -112,7 +180,71 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
   </section>
 
   <section id="captureScreen" class="hidden">
-    <!-- viewfinder (Task 6), product card + price tag (Task 7), session list (Task 8) land here -->
+
+    <div class="card">
+      <div class="eyebrow">บาร์โค้ด · Barcode</div>
+      <div class="code-row">
+        <input type="text" id="codeInput" inputmode="numeric" enterkeyhint="search"
+               placeholder="สแกน หรือพิมพ์เลข…" autocomplete="off">
+        <button class="scan-btn" id="camBtn" title="เปิดกล้อง">▣</button>
+      </div>
+      <div id="reader" class="hidden" style="margin-top:10px;border-radius:12px;overflow:hidden"></div>
+    </div>
+
+    <div class="card hit hidden" id="hitCard">
+      <img id="hitImg" alt="" onerror="this.style.visibility='hidden'">
+      <div style="min-width:0;flex:1">
+        <div class="brand" id="hitBrand"></div>
+        <div class="name" id="hitItem"></div>
+        <div class="sku" id="hitSku"></div>
+        <div class="size" id="hitSize"></div>
+        <div class="prices hidden" id="hitPrices"></div>
+      </div>
+    </div>
+
+    <div class="card miss hidden" id="missCard">
+      <div class="headline">ไม่พบสินค้านี้ในระบบ</div>
+      <div class="sub" id="missCode"></div>
+      <div id="missForm" class="hidden">
+        <input type="text" id="newItem" class="tin" placeholder="ชื่อสินค้า (ไม่ใส่ก็ได้)">
+        <button class="chip-btn" id="photoBtn" style="width:100%;margin-top:8px">📷 ถ่ายรูปสินค้า</button>
+        <input type="file" id="photoInput" accept="image/*" capture="environment" class="hidden">
+        <div class="photo-thumb hidden" id="photoThumb">
+          <img id="photoImg" alt=""><button class="rm" id="photoRm">ลบรูป</button>
+        </div>
+        <div class="sub" style="margin:8px 0 0">ใส่แค่ราคาก็บันทึกได้ — แอดมินจะเติมรายละเอียดให้ทีหลัง</div>
+      </div>
+      <div class="miss-actions" id="missActions">
+        <button id="missDiscard">ทิ้งไป</button>
+        <button class="keep" id="missKeep">บันทึกราคาต่อ</button>
+      </div>
+    </div>
+
+    <div class="card hidden" id="priceCard">
+      <div class="tag-wrap">
+        <div class="price-tag">
+          <span class="cur">฿</span><span class="amt empty" id="amt">0</span>
+          <div class="lbl">ราคาขายปลีกที่เห็น</div>
+        </div>
+      </div>
+      <div class="flags" id="flagRow">
+        <button class="chip-btn on" data-f="normal">ปกติ</button>
+        <button class="chip-btn exp" data-f="short_shelf_life">ใกล้หมดอายุ</button>
+        <button class="chip-btn promo" data-f="promo">โปรฯ</button>
+      </div>
+      <div class="pad" id="pad">
+        <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+        <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+        <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+        <button class="fn" data-k=".">·</button><button data-k="0">0</button>
+        <button class="fn" data-k="back">⌫</button>
+      </div>
+      <button class="big-btn tag" id="saveBtn" disabled>บันทึกราคา</button>
+      <div style="text-align:center;margin-top:8px">
+        <button class="linkbtn" id="clearBtn">ล้าง เริ่มรายการใหม่</button>
+      </div>
+    </div>
+
   </section>
 
   <section id="searchScreen" class="hidden">
@@ -137,7 +269,9 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
 <div id="toast"></div>
 
 <script type="module">
-import { makeId, normBarcode } from "./core.js";
+import { makeId, normBarcode, priceKey, priceValue, buildObs,
+         outboxAdd, outboxUndo, outboxDue, outboxMark, outboxRemove,
+         outboxPending, UNDO_MS } from "./core.js";
 
 /* ================= CONFIG ================= */
 const API_URL = "https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q-A3R6Fp45V42sBslG1AhZfQ_S3RyQGOg1Zp5toMgQtyaGg/exec";
@@ -146,7 +280,8 @@ const NET_TIMEOUT = 12000;
 
 /* ================= STATE ================= */
 const S = { store:null, storeId:null, newStore:null, stores:[], recent:[],
-            tab:"capture", code:null, price:"", flag:"normal", count:0 };
+            tab:"capture", code:null, product:null, isNew:false, photo:null,
+            price:"", flag:"normal", count:0 };
 
 const $ = id => document.getElementById(id);
 const esc = v => String(v).replace(/[&<>"\']/g, m =>
@@ -281,6 +416,181 @@ async function refreshStores(){
   if (!$('storeDrop').classList.contains('hidden')) renderStoreDrop();
 }
 
+/* ================= CAPTURE ================= */
+const FLAG_TH = { normal:"ปกติ", promo:"โปรฯ", short_shelf_life:"ใกล้หมดอายุ" };
+const fmtPrice = n => "฿" + (n % 1 ? n.toFixed(2) : n.toLocaleString());
+
+/** A barcode arrived — by typing, by Enter, or from the camera. */
+async function onScan(raw){
+  const code = String(raw || "").trim();
+  if (!code) return;
+
+  resetItem(false);
+  S.code = code;
+  $('codeInput').value = code;
+
+  // The price card opens IMMEDIATELY. The lookup runs behind it, so the keypad is
+  // never waiting on the network — that round trip lands in the gap while you type.
+  $('priceCard').classList.remove('hidden');
+  $('hitCard').classList.remove('hidden');
+  $('hitBrand').textContent = '';
+  $('hitItem').textContent = 'กำลังค้นหา…';
+  $('hitSku').textContent = ''; $('hitSize').textContent = '';
+  $('hitImg').style.visibility = 'hidden';
+  $('hitPrices').classList.add('hidden');
+  $('codeInput').blur();
+
+  const res = await lookupBarcode(code);
+  if (S.code !== code) return;                    // a newer scan overtook this one
+
+  if (res.pending) { showUnresolved(code); return; }
+  if (res.found)   { showHit(res); return; }
+  showMiss(code);
+}
+
+function showHit(res){
+  const p = res.p;
+  S.product = p; S.isNew = false;
+  S.code = p.barcode;                             // adopt the catalog's canonical barcode
+  $('missCard').classList.add('hidden');
+  $('hitCard').classList.remove('hidden');
+  $('hitBrand').textContent = p.brand || '';
+  $('hitItem').textContent = p.item || p.barcode;
+  $('hitSku').textContent = p.sku || '';
+  $('hitSize').textContent = [p.size, p.unit].filter(Boolean).join(' ');
+  const img = p.img ? p.img.replace('~', res.cdn || '') : '';
+  const el = $('hitImg');
+  if (img) { el.src = img; el.style.visibility = 'visible'; } else { el.style.visibility = 'hidden'; }
+  renderPrices(res.prices || []);
+}
+
+function renderPrices(list){
+  const box = $('hitPrices');
+  box.classList.remove('hidden');
+  if (!list.length){ box.innerHTML = '<div class="none">ยังไม่มีราคาจากร้านอื่น</div>'; return; }
+  box.innerHTML = list.map(r => `
+    <div class="row ${esc(r.flag)}">
+      <span class="st">${esc(r.store)}</span>
+      <span class="dt">${esc(r.date)}${r.flag !== 'normal' ? ' · ' + esc(FLAG_TH[r.flag] || r.flag) : ''}</span>
+      <span class="pr">${esc(fmtPrice(r.price))}</span>
+    </div>`).join('');
+}
+
+function showMiss(code){
+  S.product = null; S.isNew = true;
+  $('hitCard').classList.add('hidden');
+  $('missCard').classList.remove('hidden');
+  $('missCode').textContent = code;
+  $('missForm').classList.add('hidden');
+  $('missActions').classList.remove('hidden');
+}
+
+/** Offline, or the lookup failed. Not the same as "new" — do not offer to create a product. */
+function showUnresolved(code){
+  S.product = null; S.isNew = true;
+  $('hitCard').classList.remove('hidden');
+  $('missCard').classList.add('hidden');
+  $('hitBrand').textContent = '';
+  $('hitItem').textContent = code;
+  $('hitSku').textContent = 'ไม่มีสัญญาณ — บันทึกราคาได้ ระบบจะจับคู่สินค้าให้ภายหลัง';
+  $('hitSize').textContent = '';
+  $('hitPrices').classList.add('hidden');
+}
+
+/* ---- price ---- */
+function renderPrice(){
+  $('amt').textContent = S.price || '0';
+  $('amt').classList.toggle('empty', !S.price);
+  $('saveBtn').disabled = priceValue(S.price) === null;
+}
+function key(k){ S.price = priceKey(S.price, k); renderPrice(); }
+
+function setFlag(f){
+  S.flag = f;
+  $('flagRow').querySelectorAll('.chip-btn').forEach(b =>
+    b.classList.toggle('on', b.dataset.f === f));
+}
+
+/** Clear the current item but keep the store, the tab and the camera as they are. */
+function resetItem(clearCode = true){
+  S.code = null; S.product = null; S.isNew = false; S.photo = null;
+  S.price = ''; renderPrice(); setFlag('normal');
+  if (clearCode) $('codeInput').value = '';
+  ['hitCard','missCard','priceCard'].forEach(id => $(id).classList.add('hidden'));
+  $('photoThumb').classList.add('hidden');
+  $('newItem').value = '';
+}
+
+/* ================= SAVE / OUTBOX =================
+   A saved row is HELD locally for a few seconds before it is sent, so it can be undone —
+   the API is append-only and has no delete. After the window it goes out; failures queue
+   and retry. The backend recognises a repeated obs_id, so retrying can never duplicate. */
+let OUTBOX = ls.get('ps_outbox', []);
+const persistOutbox = () => ls.set('ps_outbox', OUTBOX);
+
+function saveObservation(){
+  const price = priceValue(S.price);
+  if (price === null || !S.code || !S.storeId) return;
+
+  const rec = buildObs({
+    obsId: makeId('O'), ts: new Date().toISOString(), storeId: S.storeId,
+    barcode: S.code, price, flag: S.flag, by: DEVICE,
+    source: $('reader').classList.contains('hidden') ? 'manual' : 'scan',
+    newStore: S.newStore || undefined,
+    // Always sent. The backend creates a Products row ONLY when the barcode is genuinely
+    // unknown, so an observation can never point at a product that does not exist.
+    newProduct: { brand: "", item: $('newItem').value.trim(), sku: "", photo: S.photo || null }
+  });
+  S.newStore = null;
+
+  OUTBOX = outboxAdd(OUTBOX, rec, Date.now());
+  persistOutbox();
+  S.count++;
+  renderPending();
+  toast(`บันทึกแล้ว · ${fmtPrice(price)}`);
+  resetItem();
+  $('codeInput').focus();
+}
+
+function renderPending(){
+  const n = outboxPending(OUTBOX);
+  $('sessionCount').innerHTML =
+    `รอบนี้ <b>${S.count}</b>` + (n ? ` · รอส่ง <b>${n}</b>` : '');
+}
+
+/** Everything due goes in ONE request — a shop's worth of rows is one round trip. */
+let flushing = false;
+async function flushOutbox(force){
+  if (flushing) return;
+  const due = force ? OUTBOX.filter(e => e.state !== 'sending') : outboxDue(OUTBOX, Date.now());
+  if (!due.length) return;
+  flushing = true;
+  const ids = due.map(e => e.rec.obs_id);
+  ids.forEach(id => { OUTBOX = outboxMark(OUTBOX, id, 'sending'); });
+  persistOutbox();
+  try {
+    const d = await api('', { method:'POST', headers:{'Content-Type':'text/plain'},
+                             body: JSON.stringify({ type:'batch', items: due.map(e => e.rec) }) }, 30000);
+    if (!d.ok || !Array.isArray(d.results)) throw new Error('rejected');
+    d.results.forEach(r => {
+      // "duplicate" means a previous attempt DID land — the row is safely in the Sheet,
+      // so it is done, not failed. This is what makes retrying over a bad signal safe.
+      OUTBOX = (r.status === 'written' || r.status === 'duplicate')
+        ? outboxRemove(OUTBOX, r.id) : outboxMark(OUTBOX, r.id, 'queued');
+      if (r.store_id) { S.storeId = r.store_id; ls.set('ps_store', { name:S.store, id:r.store_id }); }
+    });
+  } catch (e) {
+    ids.forEach(id => { OUTBOX = outboxMark(OUTBOX, id, 'queued'); });
+  }
+  flushing = false;
+  persistOutbox(); renderPending();
+}
+
+setInterval(() => flushOutbox(false), 2000);
+window.addEventListener('online', () => flushOutbox(true));
+// Flushing when the page hides stops a held row being lost if the app is closed mid-window.
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushOutbox(true); });
+
 /* ================= TABS ================= */
 function showTab(which){
   S.tab = which;
@@ -307,7 +617,30 @@ $('storeInput').addEventListener('focus', renderStoreDrop);
 $('storeInput').addEventListener('keydown', e => { if (e.key === 'Enter') createStore(); });
 $('storeGo').addEventListener('click', createStore);
 $('storeChip').addEventListener('click', showStorePicker);
-$('tabCapture').addEventListener('click', () => showTab('capture'));
+// Tapping เก็บราคา while already on it clears the current item — a one-tap restart.
+$('tabCapture').addEventListener('click', () => {
+  if (S.tab === 'capture' && S.storeId) resetItem();
+  showTab('capture');
+});
+$('codeInput').addEventListener('keydown', e => { if (e.key === 'Enter') onScan(e.target.value); });
+$('pad').addEventListener('click', e => { const k = e.target.dataset.k; if (k) key(k); });
+$('flagRow').addEventListener('click', e => { const f = e.target.dataset.f; if (f) setFlag(f); });
+$('clearBtn').addEventListener('click', () => { resetItem(); $('codeInput').focus(); });
+$('missKeep').addEventListener('click', () => {
+  $('missForm').classList.remove('hidden');
+  $('missActions').classList.add('hidden');
+});
+$('missDiscard').addEventListener('click', () => { resetItem(); $('codeInput').focus(); });
+$('saveBtn').addEventListener('click', saveObservation);
+
+// Physical keyboard: the laptop is a real capture device too.
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (/^[0-9]$/.test(e.key)) key(e.key);
+  else if (e.key === '.') key('.');
+  else if (e.key === 'Backspace') key('back');
+  else if (e.key === 'Enter' && priceValue(S.price) !== null) saveObservation();
+});
 $('tabSearch').addEventListener('click', () => showTab('search'));
 document.addEventListener('click', e => {
   if (!e.target.closest('.combo')) $('storeDrop').classList.add('hidden');
@@ -326,7 +659,9 @@ function init(){
   else showTab('capture');
 
   setStatus('พร้อมใช้งาน');
+  renderPending();
   refreshStores();
+  flushOutbox(true);
 }
 init();
 </script>

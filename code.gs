@@ -1,6 +1,6 @@
 /**
  * PRICE SCOUT — backend v6
- * = v5 + single-barcode lookup and a stores endpoint.
+ * = v5 + per-scan barcode lookup (product + other shops' prices) and a stores endpoint.
  *
  * WHY v6: the capture page no longer downloads the product master. It resolves one barcode
  * at a time while the user is typing the price, so the round trip is hidden rather than
@@ -148,31 +148,94 @@ function delta(afterSeq) {
 }
 
 /**
- * One barcode -> one product, or found:false. Normalises both sides, so a UPC-A scanned as
- * a zero-padded EAN-13 still resolves. Reads column A once (~26k cells, well under a second)
- * and then only the matching row.
+ * One barcode -> the product plus what other shops charge for it.
+ *
+ * Uses Sheets' native TextFinder rather than pulling 26,289 barcodes into JS on every scan.
+ * TextFinder runs inside Sheets and returns only matching cells, so cost tracks the number
+ * of hits, not the size of the tab. Barcodes are searched in every form they may appear in,
+ * because the Sheet stores them as numbers and a UPC-A may be scanned as 12 digits or as 13
+ * with a leading zero.
  */
-function lookup(barcode) {
-  const key = normBarcode(barcode || "");
-  if (!key) return json({ ok: true, found: false });
-  const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
-  const last = ps.getLastRow();
-  if (last < 2) return json({ ok: true, found: false });
+function barcodeForms(barcode) {
+  const key = normBarcode(barcode);
+  const forms = [String(barcode).trim(), key];
+  if (key.length === 12) forms.push("0" + key);
+  if (key.length === 13 && key.charAt(0) === "0") forms.push(key.substring(1));
+  return forms.filter(function (v, i, a) { return v && a.indexOf(v) === i; });
+}
 
-  const codes = ps.getRange(2, 1, last - 1, 1).getValues();
-  let row = -1;
-  for (let i = 0; i < codes.length; i++) {
-    if (normBarcode(codes[i][0]) === key) { row = i + 2; break; }
+/** First row in `col` of `sheet` whose text equals any of `forms`, or -1. */
+function findRow(sheet, col, forms) {
+  const last = sheet.getLastRow();
+  if (last < 2) return -1;
+  const range = sheet.getRange(2, col, last - 1, 1);
+  for (let i = 0; i < forms.length; i++) {
+    const hit = range.createTextFinder(forms[i]).matchEntireCell(true).findNext();
+    if (hit) return hit.getRow();
   }
+  return -1;
+}
+
+function lookup(barcode) {
+  if (!barcode) return json({ ok: true, found: false });
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ps = ss.getSheetByName("Products");
+  const forms = barcodeForms(barcode);
+
+  const row = findRow(ps, 1, forms);
   if (row < 0) return json({ ok: true, found: false, barcode: String(barcode) });
 
   const r = ps.getRange(row, 1, 1, 12).getValues()[0];
-  return json({ ok: true, found: true, p: {
-    barcode: String(r[0]), brand: r[1] || "", item: r[2] || "", sku: r[3] || "",
+  const canonical = String(r[0]);
+
+  return json({ ok: true, found: true, cdn: CDN_PREFIX, p: {
+    barcode: canonical, brand: r[1] || "", item: r[2] || "", sku: r[3] || "",
     size: r[4] || "", unit: r[5] || "",
-    img: String(r[9] || "").replace(CDN_PREFIX, "~"), cdn: CDN_PREFIX,
+    img: String(r[9] || "").replace(CDN_PREFIX, "~"),
     needs_info: r[11] === "YES"
-  }});
+  }, prices: pricesFor(ss, barcodeForms(canonical).concat(forms)) });
+}
+
+/** Latest price per store per flag for this barcode, newest first. */
+function pricesFor(ss, forms) {
+  const os = ss.getSheetByName("Observations");
+  const last = os.getLastRow();
+  if (last < 2) return [];
+  const col = os.getRange(2, 4, last - 1, 1);
+
+  const rows = {};
+  for (let i = 0; i < forms.length; i++) {
+    const found = col.createTextFinder(forms[i]).matchEntireCell(true).findAll();
+    for (let k = 0; k < found.length; k++) rows[found[k].getRow()] = true;
+  }
+  const rowNums = Object.keys(rows).map(Number).sort(function (a, b) { return b - a; });
+  if (!rowNums.length) return [];
+
+  // store_id -> {name, region, channel}
+  const st = ss.getSheetByName("Stores");
+  const smap = {};
+  if (st.getLastRow() > 1) {
+    st.getRange(2, 1, st.getLastRow() - 1, 4).getValues().forEach(function (v) {
+      smap[String(v[0])] = { name: String(v[1] || v[0]),
+                             region: String(v[2] || ""), channel: String(v[3] || "") };
+    });
+  }
+
+  const tz = Session.getScriptTimeZone();
+  const seen = {}, out = [];
+  for (let i = 0; i < rowNums.length && out.length < 12; i++) {
+    const v = os.getRange(rowNums[i], 1, 1, 8).getValues()[0];
+    const sid = String(v[2] || ""), flag = String(v[5] || "normal");
+    const dedupe = sid + "|" + flag;
+    if (seen[dedupe]) continue;             // rows are newest-first, so the first wins
+    seen[dedupe] = true;
+    const meta = smap[sid] || { name: sid, region: "", channel: "" };
+    out.push({ store: meta.name, region: meta.region, channel: meta.channel,
+               price: Number(v[4]), flag: flag,
+               date: (v[1] instanceof Date) ? Utilities.formatDate(v[1], tz, "yyyy-MM-dd")
+                                            : String(v[1] || "").slice(0, 10) });
+  }
+  return out;
 }
 
 /** The store list. Tiny tab; the picker caches this and refreshes it on open. */
