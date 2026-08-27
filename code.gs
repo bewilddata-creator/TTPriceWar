@@ -1,6 +1,19 @@
 /**
- * PRICE SCOUT — backend v7
- * = v5 + per-scan barcode lookup, a parallel prices endpoint, and a stores endpoint.
+ * PRICE SCOUT — backend v8
+ * = v7 + admin endpoints: vocab, needsinfo, psearch, and in-place edits to Products/Stores.
+ *
+ * WHY v8: the admin screen needs to browse and fix the product master without ever touching
+ * row order or column position. Four additions:
+ *  1. GET vocab — brand list + category_1/2/3 tree, for dropdowns. Cached 1h; the scan behind
+ *     it touches the whole Products tab, and the vocabulary barely changes hour to hour.
+ *  2. GET needsinfo — the review queue (needs_info = YES, or brand still blank). Never cached:
+ *     an admin who just fixed a row must see it drop off the list on the next fetch.
+ *  3. GET psearch — free-text product search for the "attach existing product" flow.
+ *  4. POST updateProduct / updateStore / uploadImage — edit a row in place through the same
+ *     batch mechanism as obs/tunsong. updateProduct and uploadImage evict the `lk:` cache
+ *     entry for that barcode, or `lookup` keeps serving the pre-edit product for up to 6h.
+ *     updateStore refuses a rename that collides with another store's storeKey() — that would
+ *     silently merge two shops in every aggregate downstream.
  *
  * WHY v6: the capture page no longer downloads the product master. It resolves one barcode
  * at a time while the user is typing the price, so the round trip is hidden rather than
@@ -103,7 +116,10 @@ function doGet(e) {
   if (action === "lookup") return lookup(e.parameter.barcode);
   if (action === "prices") return pricesEndpoint(e.parameter.barcode);
   if (action === "stores") return stores();
-  return json({ ok: true, msg: "Price Scout API v7" });
+  if (action === "vocab") return vocab();
+  if (action === "needsinfo") return needsInfo(e.parameter.limit);
+  if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
+  return json({ ok: true, msg: "Price Scout API v8" });
 }
 
 /* ---- capture page: products (light) + stores ---- */
@@ -283,6 +299,105 @@ function stores() {
              .map(function (r) { return [String(r[0]), String(r[1]),
                                          String(r[2] || ""), String(r[3] || "")]; });
   return json({ ok: true, s: s });
+}
+
+/**
+ * Brand list + category_1/2/3 tree, for the admin's dropdowns. One scan of Products columns
+ * B, G, H, I, cached for an hour — the vocabulary changes rarely and the scan touches every
+ * row, so paying for it on every keystroke would be wasteful.
+ */
+function vocab() {
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get("vocab");
+  if (hit) return ContentService.createTextOutput(hit).setMimeType(ContentService.MimeType.JSON);
+
+  const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
+  const last = ps.getLastRow();
+  const brandSet = {}, tree = {};
+  if (last > 1) {
+    // B..I in one call covers brand (B) and the three category columns (G, H, I) together
+    const v = ps.getRange(2, 2, last - 1, 8).getValues();
+    v.forEach(function (r) {
+      const brand = String(r[0] || "").trim();
+      if (brand) brandSet[brand] = true;
+      const c1 = String(r[5] || "").trim(), c2 = String(r[6] || "").trim(), c3 = String(r[7] || "").trim();
+      if (!c1 || !c2) return;
+      if (!tree[c1]) tree[c1] = {};
+      if (!tree[c1][c2]) tree[c1][c2] = [];
+      if (c3 && tree[c1][c2].indexOf(c3) < 0) tree[c1][c2].push(c3);
+    });
+  }
+  Object.keys(tree).forEach(function (c1) {
+    Object.keys(tree[c1]).forEach(function (c2) { tree[c1][c2].sort(); });
+  });
+
+  const payload = JSON.stringify({ ok: true, brands: Object.keys(brandSet).sort(), tree: tree });
+  // Serving uncached beats failing the request if the vocabulary ever outgrows the ~100KB
+  // per-key cache limit.
+  try { cache.put("vocab", payload, 3600); } catch (err) {}
+  return ContentService.createTextOutput(payload).setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * The review queue: products still missing a brand, or explicitly flagged needs_info = YES.
+ * Never cached — an admin who just fixed a row must see it drop off the very next fetch.
+ */
+function needsInfo(limitParam) {
+  let limit = Number(limitParam) || 300;
+  if (limit < 1) limit = 300;
+  if (limit > 1000) limit = 1000;
+
+  const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
+  const last = ps.getLastRow();
+  const tz = Session.getScriptTimeZone();
+  const out = [];
+  if (last > 1) {
+    const v = ps.getRange(2, 1, last - 1, 14).getValues();   // A..N in one call
+    for (let i = 0; i < v.length && out.length < limit; i++) {
+      const r = v[i];
+      const brand = r[1] || "";
+      const needs = r[11] === "YES";
+      if (!needs && String(brand).trim()) continue;           // neither condition met
+      out.push({
+        barcode: String(r[0]), brand: brand, item: r[2] || "", sku: r[3] || "",
+        size: r[4] || "", unit: r[5] || "", c1: r[6] || "", c2: r[7] || "", c3: r[8] || "",
+        img: String(r[9] || "").replace(CDN_PREFIX, "~"),
+        first_seen: (r[12] instanceof Date) ? Utilities.formatDate(r[12], tz, "yyyy-MM-dd") : String(r[12] || ""),
+        needs_info: needs
+      });
+    }
+  }
+  return json({ ok: true, cdn: CDN_PREFIX, p: out });
+}
+
+/**
+ * Free-text product search for the "attach existing product" flow. Reads barcode/brand/item/
+ * sku/size/unit once, then stops as soon as `limit` matches are found rather than filtering
+ * the whole tab and slicing — with 26k+ rows the difference matters.
+ */
+function psearch(q, brandFilter, limitParam) {
+  let limit = Number(limitParam) || 50;
+  if (limit < 1) limit = 50;
+  if (limit > 200) limit = 200;
+
+  const needle = String(q || "").trim().toLowerCase();
+  const bf = brandFilter ? String(brandFilter).trim().toLowerCase() : "";
+  const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
+  const last = ps.getLastRow();
+  const out = [];
+  if (last > 1) {
+    const v = ps.getRange(2, 1, last - 1, 6).getValues();    // A..F: barcode, brand, item, sku, size, unit
+    for (let i = 0; i < v.length && out.length < limit; i++) {
+      const r = v[i];
+      const brand = String(r[1] || "");
+      if (bf && brand.toLowerCase() !== bf) continue;
+      const hay = (brand + " " + String(r[2] || "") + " " + String(r[3] || "")).toLowerCase();
+      if (needle && hay.indexOf(needle) < 0) continue;
+      out.push({ barcode: String(r[0]), brand: brand, item: r[2] || "", sku: r[3] || "",
+                 size: r[4] || "", unit: r[5] || "" });
+    }
+  }
+  return json({ ok: true, p: out });
 }
 
 /* ---- viewer page: everything, dictionary-compressed ---- */
@@ -467,7 +582,92 @@ function writeOne(ss, d, ctx) {
     return { id: tid, status: "written" };
   }
 
+  if (d.type === "updateProduct") return updateProduct(ss, d);
+  if (d.type === "updateStore") return updateStore(ss, d);
+  if (d.type === "uploadImage") return uploadImage(ss, d);
+
   return { id: d.obs_id || d.ts_id || "", status: "unknown_type" };
+}
+
+/**
+ * Edits an existing Products row in place. Only keys present in `fields` are written — an
+ * absent key must leave the cell untouched, but an explicit "" DOES clear it, so the check
+ * below is `in`, not truthiness. Columns B..J are contiguous, so a touched field there costs
+ * one read + one write no matter how many of the nine keys are present; notes (N) sits past
+ * the seq/source/first_seen columns and is written separately only when supplied.
+ */
+function updateProduct(ss, d) {
+  const ps = ss.getSheetByName("Products");
+  const row = findRow(ps, 1, barcodeForms(d.barcode));
+  if (row < 0) return { id: d.barcode, status: "not_found" };
+
+  const fields = d.fields || {};
+  const BJ_KEYS = ["brand", "item", "sku", "size", "unit",
+                    "category_1", "category_2", "category_3", "image_url"];  // columns B..J, in order
+  if (BJ_KEYS.some(function (k) { return k in fields; })) {
+    const range = ps.getRange(row, 2, 1, 9);
+    const cur = range.getValues()[0];
+    BJ_KEYS.forEach(function (k, i) {
+      if (!(k in fields)) return;
+      // size is a numeric column; a form hands us strings, and "150" stored as text sorts and
+      // compares wrongly in the Sheet forever after.
+      cur[i] = (k === "size" && fields[k] !== "" && !isNaN(fields[k]))
+        ? Number(fields[k]) : fields[k];
+    });
+    range.setValues([cur]);
+  }
+  if ("notes" in fields) ps.getRange(row, 14).setValue(fields.notes);
+  if (d.clear_needs_info) ps.getRange(row, 12).setValue("");
+
+  // Both caches must go: "lk:" or lookup keeps serving the pre-edit product for 6 hours, and
+  // "vocab" or a brand/category the admin just introduced is missing from their own dropdown.
+  CacheService.getScriptCache().removeAll(["lk:" + normBarcode(d.barcode), "vocab"]);
+  return { id: d.barcode, status: "updated" };
+}
+
+/**
+ * Edits an existing Stores row in place. A rename that collides with another row's storeKey()
+ * is refused outright — silently merging two shops would corrupt every price comparison that
+ * groups by store, and there is no way to undo it from the data alone.
+ */
+function updateStore(ss, d) {
+  const st = ss.getSheetByName("Stores");
+  const last = st.getLastRow();
+  if (last < 2) return { id: d.store_id, status: "not_found" };
+
+  const ids = st.getRange(2, 1, last - 1, 1).getValues().flat().map(String);
+  const idx = ids.indexOf(String(d.store_id));
+  if (idx < 0) return { id: d.store_id, status: "not_found" };
+  const row = idx + 2;
+
+  const fields = d.fields || {};
+  if ("store" in fields) {
+    const keys = st.getRange(2, 2, last - 1, 1).getValues().flat().map(storeKey);
+    const newKey = storeKey(fields.store);
+    const clash = keys.some(function (k, i) { return i !== idx && k === newKey; });
+    if (clash) return { id: d.store_id, status: "duplicate_name" };
+  }
+
+  const BE_KEYS = ["store", "region", "channel", "notes"];  // columns B..E, in order
+  if (BE_KEYS.some(function (k) { return k in fields; })) {
+    const range = st.getRange(row, 2, 1, 4);
+    const cur = range.getValues()[0];
+    BE_KEYS.forEach(function (k, i) { if (k in fields) cur[i] = fields[k]; });
+    range.setValues([cur]);
+  }
+  return { id: d.store_id, status: "updated" };
+}
+
+/** Saves a captured photo to Drive and points the product's image_url at it. */
+function uploadImage(ss, d) {
+  const ps = ss.getSheetByName("Products");
+  const row = findRow(ps, 1, barcodeForms(d.barcode));
+  if (row < 0) return { id: d.barcode, status: "not_found" };
+
+  const url = savePhoto(d.photo, "prod_" + normBarcode(d.barcode));
+  ps.getRange(row, 10).setValue(url);
+  CacheService.getScriptCache().remove("lk:" + normBarcode(d.barcode));
+  return { id: d.barcode, status: "updated", url: url };
 }
 
 /* ================= helpers ================= */
@@ -479,7 +679,7 @@ function savePhoto(dataUrl, name) {
   const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(PHOTO_FOLDER);
   const file = folder.createFile(blob);
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-  return "https://drive.google.com/thumbnail?id=" + file.getId() + "&sz=w400";
+  return "https://drive.google.com/thumbnail?id=" + file.getId() + "&sz=w600";
 }
 function json(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj))
