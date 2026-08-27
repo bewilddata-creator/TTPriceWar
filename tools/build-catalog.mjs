@@ -16,12 +16,15 @@ if (!d.seq) throw new Error(
   "bootstrap returned no seq — deploy backend v5 and run backfillSeq() first");
 
 // `seq` is delta's starting point. Order-independent, so sorting the Sheet cannot invalidate it.
+// Stores ride along: the tab is tiny (one row today, tens later) and the picker needs it
+// on open. Products dominate the payload; stores add well under a kilobyte.
 const catalog = { v: stamp, n: d.p.length, seq: d.seq,
-                  p: d.p.map(r => [r[0], r[1], r[2], r[3]]) };
+                  p: d.p.map(r => [r[0], r[1], r[2], r[3]]),
+                  s: d.s.map(r => [r[0], r[1]]) };
 const images = { v: stamp, cdn: d.cdn || "", img: d.p.map(r => r[4] || "") };
 
 mkdirSync("data", { recursive: true });
 writeFileSync("data/catalog.json", JSON.stringify(catalog));
 writeFileSync("data/images.json", JSON.stringify(images));
 
-console.log(`wrote ${catalog.n} products, seq ${catalog.seq}, stamp ${stamp}`);
+console.log(`wrote ${catalog.n} products, ${catalog.s.length} stores, seq ${catalog.seq}, stamp ${stamp}`);

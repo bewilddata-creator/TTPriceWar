@@ -27,6 +27,14 @@ test("barcodes are unique", () => {
   assert.equal(new Set(catalog.p.map(r => r[0])).size, catalog.p.length);
 });
 
+test("catalog carries the store list the picker needs on open", () => {
+  assert.ok(Array.isArray(catalog.s) && catalog.s.length >= 1);
+  for (const [id, name] of catalog.s) {
+    assert.match(id, /^S-/);
+    assert.ok(name.length > 0);
+  }
+});
+
 test("images align to catalog by index and share its stamp", () => {
   assert.equal(images.img.length, catalog.p.length);
   assert.equal(images.v, catalog.v);
