@@ -5,3 +5,6 @@ node_modules/
 *.xlsx
 *.csv
 data/
+
+# working docs stay local
+Docs/
