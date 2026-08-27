@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#17191C">
+<title>Price Scout · Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FAF9F6; --card:#FFFFFF; --ink:#17191C; --mut:#6E6A61;
+  --line:#E6E2D9; --tag:#FF7A1A; --tag-deep:#E05E00; --tag-ink:#3A1A00;
+  --ok:#0E8A5F; --ok-bg:#EAF6F0; --warn:#C7462B; --warn-bg:#FDF0ED;
+  --amber:#B07100; --amber-bg:#FBF3E0;
+  --r:14px; --shadow:0 1px 2px rgba(23,25,28,.06),0 6px 18px rgba(23,25,28,.07);
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+html,body{margin:0; background:var(--paper); color:var(--ink);
+  font-family:'Noto Sans Thai',system-ui,sans-serif; font-size:15px}
+body{min-height:100dvh; display:flex; flex-direction:column}
+button{font-family:inherit; border:none; cursor:pointer; background:none; color:inherit}
+input,select{font-family:inherit}
+.hidden{display:none!important}
+
+header{position:sticky; top:0; z-index:20; background:var(--paper);
+  border-bottom:1px solid var(--line); padding:14px 24px; display:flex; align-items:center; gap:24px}
+.logo{font-weight:800; font-size:16px; letter-spacing:.2px}
+.logo small{display:block; font-weight:500; color:var(--mut); font-size:11px; letter-spacing:.4px; margin-top:2px}
+.toptabs{display:flex; gap:6px; margin-left:auto}
+.toptab{padding:9px 18px; border-radius:99px; font-weight:700; font-size:13.5px; color:var(--mut)}
+.toptab.on{background:var(--ink); color:#fff}
+
+main{flex:1; padding:24px; display:flex; flex-direction:column; gap:16px;
+  max-width:1400px; margin:0 auto; width:100%}
+
+.card{background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+  box-shadow:var(--shadow); padding:16px}
+.eyebrow{font-size:11px; font-weight:700; letter-spacing:1px; color:var(--mut);
+  text-transform:uppercase; margin-bottom:8px}
+.tin{width:100%; padding:12px 13px; font-size:15px; font-weight:600; border:1.5px solid var(--line);
+  border-radius:11px; background:var(--paper); color:var(--ink)}
+.tin:focus{outline:none; border-color:var(--ink)}
+.linkbtn{background:none; color:var(--mut); font-size:12.5px; font-weight:600;
+  text-decoration:underline; padding:2px 0}
+
+/* ---- control strip ---- */
+.controlstrip{display:flex; gap:22px; align-items:flex-end; flex-wrap:wrap}
+.field{display:flex; flex-direction:column; gap:6px; min-width:160px}
+.field.grow{flex:1; max-width:380px}
+
+.combo{position:relative}
+.combo-list{position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:40;
+  background:var(--card); border:1px solid var(--line); border-radius:12px;
+  box-shadow:var(--shadow); max-height:280px; overflow-y:auto}
+.combo-list button{display:block; width:100%; text-align:left; padding:11px 14px;
+  font-size:14.5px; font-weight:600; border-bottom:1px solid var(--line)}
+.combo-list button:last-child{border-bottom:none}
+.combo-list button:hover{background:var(--paper)}
+.combo-list .meta{display:block; font-size:11.5px; font-weight:500; color:var(--mut); margin-top:2px}
+.combo-empty{padding:12px 14px; font-size:13.5px; color:var(--mut)}
+
+.segmented{display:flex; background:var(--paper); border:1px solid var(--line); border-radius:99px; padding:3px}
+.segmented button{padding:9px 18px; border-radius:99px; font-weight:700; font-size:13.5px; color:var(--mut)}
+.segmented button.on{background:var(--ink); color:#fff}
+
+/* ---- split ---- */
+.split{display:grid; grid-template-columns:1fr 340px; gap:16px; align-items:start}
+#selectModeCard{grid-column:1/-1}
+.placeholder-note{font-size:14px; color:var(--mut); line-height:1.7}
+.placeholder-note code{background:var(--paper); padding:2px 7px; border-radius:6px;
+  font-family:'IBM Plex Mono',monospace; font-size:13px}
+
+.gridhead{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px}
+.gridscroll{overflow:auto; max-height:calc(100dvh - 340px); min-height:220px}
+table#grid{width:100%; border-collapse:collapse}
+table#grid thead th{position:sticky; top:0; z-index:1; background:var(--card);
+  text-align:left; font-size:11px; font-weight:700; letter-spacing:.6px; color:var(--mut);
+  text-transform:uppercase; padding:8px 10px; border-bottom:1px solid var(--line)}
+table#grid tbody td{padding:3px 6px; border-bottom:1px solid var(--line)}
+.cell-barcode, .cell-price{width:100%; padding:9px 10px; font-family:'IBM Plex Mono',monospace;
+  font-weight:600; font-size:14.5px; border:1.5px solid transparent; border-radius:8px;
+  background:transparent; color:var(--ink)}
+.cell-barcode:focus, .cell-price:focus{outline:none; border-color:var(--ink); background:var(--paper)}
+.cell-barcode.bad-check{border-color:var(--warn); background:var(--warn-bg)}
+.cell-flag{width:100%; padding:8px 6px; border:1.5px solid transparent; border-radius:8px;
+  font-size:12.5px; font-weight:600; background:transparent; color:var(--mut)}
+.cell-flag:focus{outline:none; border-color:var(--ink)}
+.prodcell{font-size:13.5px; color:var(--mut); white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; max-width:280px}
+.prodcell.found{color:var(--ink); font-weight:600}
+.prodcell.miss{color:var(--warn); font-weight:600}
+.rm-row{width:26px; height:26px; border-radius:8px; color:var(--mut); font-size:15px; line-height:1}
+.rm-row:hover{background:var(--warn-bg); color:var(--warn)}
+
+/* ---- summary ---- */
+.statgrid2{display:grid; grid-template-columns:repeat(2,1fr); gap:10px; text-align:left}
+.statgrid2 .lab{display:block; font-size:10.5px; font-weight:700; letter-spacing:.5px;
+  color:var(--mut); text-transform:uppercase}
+.statgrid2 .val{display:block; font-family:'IBM Plex Mono',monospace; font-weight:700;
+  font-size:22px; margin-top:3px}
+.statgrid2 .val.warn{color:var(--warn)}
+.statgrid2 .val.ok{color:var(--ok)}
+.empty-note{font-size:13px; color:var(--mut)}
+.unresolved-item{display:flex; justify-content:space-between; align-items:center; gap:8px;
+  width:100%; text-align:left; padding:9px 10px; border-radius:8px; border:1px solid var(--line);
+  background:var(--card); margin-bottom:6px}
+.unresolved-item:hover{background:var(--paper)}
+.unresolved-item .uc{font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:13px}
+.unresolved-item .ur{color:var(--warn); font-size:11px; font-weight:700; white-space:nowrap}
+
+/* ---- submit bar ---- */
+.submitbar{display:flex; align-items:center; justify-content:space-between; gap:16px}
+#submitStatusText{font-size:13.5px; color:var(--mut)}
+#submitStatusText.err{color:var(--warn); font-weight:600}
+#submitBtn{background:var(--ink); color:#fff; padding:13px 24px; border-radius:12px;
+  font-weight:700; font-size:15px}
+#submitBtn:disabled{opacity:.35; cursor:default}
+
+#toast{position:fixed; left:50%; bottom:28px; transform:translateX(-50%) translateY(20px);
+  background:var(--ink); color:#fff; padding:11px 20px; border-radius:99px; font-weight:600;
+  font-size:14px; opacity:0; pointer-events:none; transition:.25s; z-index:50; white-space:nowrap}
+#toast.show{opacity:1; transform:translateX(-50%)}
+#toast.err{background:var(--warn)}
+
+@media (max-width:900px){
+  .split{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">PRICE SCOUT <small>เครื่องมือแอดมิน</small></div>
+  <nav class="toptabs">
+    <button class="toptab on" id="tabEntry">ป้อนราคา</button>
+    <button class="toptab" id="tabReview">เติมข้อมูลสินค้า</button>
+    <button class="toptab" id="tabStores">จัดการร้าน</button>
+  </nav>
+</header>
+
+<main>
+
+  <section id="entryScreen">
+
+    <div class="card controlstrip">
+      <div class="field grow">
+        <label class="eyebrow" for="storeInput">ร้าน · Store</label>
+        <div class="combo">
+          <input type="text" id="storeInput" class="tin" placeholder="พิมพ์ชื่อร้าน…"
+                 autocomplete="off" autocorrect="off" spellcheck="false">
+          <div class="combo-list hidden" id="storeDrop"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label class="eyebrow" for="dateInput">วันที่สำรวจ</label>
+        <input type="date" id="dateInput" class="tin">
+      </div>
+      <div class="field">
+        <span class="eyebrow">โหมด</span>
+        <div class="segmented">
+          <button type="button" class="on" id="modeBarcodeBtn">บาร์โค้ด</button>
+          <button type="button" id="modeSelectBtn">เลือกสินค้า</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="split">
+
+      <div class="card" id="barcodeGridWrap">
+        <div class="gridhead">
+          <div class="eyebrow" style="margin:0">พิมพ์บาร์โค้ดแล้วราคา · Enter เพื่อไปแถวถัดไป</div>
+          <button type="button" class="linkbtn" id="addRowBtn">+ แถวใหม่</button>
+        </div>
+        <div class="gridscroll">
+          <table id="grid">
+            <colgroup>
+              <col style="width:200px"><col style="width:110px"><col style="width:130px">
+              <col><col style="width:34px">
+            </colgroup>
+            <thead>
+              <tr><th>บาร์โค้ด</th><th>ราคา</th><th>ประเภท</th><th>สินค้า</th><th></th></tr>
+            </thead>
+            <tbody id="gridBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card hidden" id="selectModeCard">
+        <div class="eyebrow">เลือกสินค้า</div>
+        <div class="placeholder-note">
+          โหมดนี้ต้องใช้ API <code>?action=psearch</code> ซึ่งยังไม่เปิดใช้งานในระบบหลังบ้าน —
+          ตอนนี้ใช้โหมด “บาร์โค้ด” ไปก่อน เมื่อ endpoint พร้อมแล้วโหมดนี้จะเปิดใช้งานได้
+        </div>
+      </div>
+
+      <div class="card" id="summaryCard">
+        <div class="eyebrow">สรุปสถานะ</div>
+        <div class="statgrid2">
+          <div><span class="lab">แถวทั้งหมด</span><span class="val" id="statTotal">0</span></div>
+          <div><span class="lab">พบสินค้าแล้ว</span><span class="val ok" id="statResolved">0</span></div>
+          <div><span class="lab">ไม่พบ</span><span class="val warn" id="statNotFound">0</span></div>
+          <div><span class="lab">เลขอาจผิด</span><span class="val warn" id="statBadCheck">0</span></div>
+        </div>
+        <div class="eyebrow" style="margin-top:16px">รายการค้าง</div>
+        <div id="unresolvedList"><div class="empty-note">ไม่มีรายการค้าง</div></div>
+      </div>
+
+    </div>
+
+    <div class="card submitbar">
+      <div id="submitStatusText">พร้อมใช้งาน</div>
+      <button type="button" id="submitBtn" disabled>บันทึกทั้งหมด (0 รายการ)</button>
+    </div>
+
+  </section>
+
+  <section id="reviewScreen" class="card hidden">
+    <!-- เติมข้อมูลสินค้า — filled in separately -->
+  </section>
+
+  <section id="storesScreen" class="card hidden">
+    <!-- จัดการร้าน — filled in separately -->
+  </section>
+
+</main>
+
+<div id="toast"></div>
+
+<script type="module">
+import { makeId, normBarcode, priceValue, buildObs, rankStores, isValidBarcode } from "./core.js";
+
+/* ================= CONFIG ================= */
+const API_URL = "https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q-A3R6Fp45V42sBslG1AhZfQ_S3RyQGOg1Zp5toMgQtyaGg/exec";
+const DEVICE = "admin";
+const NET_TIMEOUT = 12000;
+
+/* ================= STATE ================= */
+const S = { store: "", storeId: null, stores: [], mode: "barcode" };
+
+const $ = id => document.getElementById(id);
+const esc = v => String(v).replace(/[&<>"\']/g, m =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "\'":"&#39;" }[m]));
+
+/* ---- localStorage, always guarded: a full quota or private-mode block must never break typing ---- */
+const ls = {
+  get(k, d){ try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d } catch(e) { return d } },
+  set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)) } catch(e) {} }
+};
+
+/** Every network call goes through here — same shape as index.html's api(): no request may
+ *  hang the UI, and Apps Script cannot answer a CORS preflight so POST bodies stay text/plain. */
+async function api(path, opts = {}, timeout = NET_TIMEOUT) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeout);
+  try {
+    const res = await fetch(API_URL + path, { ...opts, signal: ctl.signal });
+    return await res.json();
+  } catch (e) {
+    return { ok: false, offline: true };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+let toastT;
+function toast(msg, err){
+  const t = $('toast');
+  t.textContent = msg; t.classList.toggle('err', !!err); t.classList.add('show');
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2400);
+}
+function setSubmitStatus(msg, isErr){
+  const el = $('submitStatusText');
+  el.textContent = msg;
+  el.classList.toggle('err', !!isErr);
+}
+
+/* ================= STORES =================
+   Existing stores only — creating a new store belongs to จัดการร้าน (a separate tab, not built
+   here), so this combo never invents one. */
+let storesLoading = false;
+
+function renderStoreDrop(){
+  const raw = $('storeInput').value.trim();
+  const box = $('storeDrop');
+  const hits = rankStores(S.stores, raw, 10);
+  box.innerHTML = '';
+  if (!S.stores.length) {
+    const d = document.createElement('div');
+    d.className = 'combo-empty';
+    d.textContent = storesLoading ? 'กำลังโหลดรายชื่อร้าน…' : 'ยังไม่มีรายชื่อร้าน';
+    box.appendChild(d);
+  }
+  hits.forEach(s => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.innerHTML = `${esc(s.name)}` +
+      (s.channel || s.region ? `<span class="meta">${esc([s.region, s.channel].filter(Boolean).join(' · '))}</span>` : '');
+    b.addEventListener('click', () => pickStore(s.name, s.id));
+    box.appendChild(b);
+  });
+  box.classList.toggle('hidden', box.childElementCount === 0);
+}
+
+function pickStore(nm, id){
+  S.store = nm; S.storeId = id;
+  $('storeInput').value = nm;
+  $('storeDrop').classList.add('hidden');
+  saveDraft();
+  updateSubmitButton();
+}
+
+/** Cached copy renders first; the background refresh is silent on failure — the picker still
+ *  works from whatever was cached on a previous visit. */
+async function refreshStores(){
+  const cached = ls.get('ps_admin_stores', null);
+  if (cached && cached.length) S.stores = cached;
+  storesLoading = true;
+  if (!$('storeDrop').classList.contains('hidden')) renderStoreDrop();
+  const d = await api('?action=stores');
+  storesLoading = false;
+  if (!d.ok || !Array.isArray(d.s)) { renderStoreDrop(); return; }
+  S.stores = d.s.map(r => ({ id:r[0], name:r[1], region:r[2], channel:r[3] }));
+  ls.set('ps_admin_stores', S.stores);
+  renderStoreDrop();
+}
+
+/* ================= PRODUCT LOOKUP =================
+   Fires in the background as soon as a barcode cell is committed (Enter or blur) so typing is
+   never blocked on the network. A Map keyed by the normalised barcode makes a repeated code
+   instant; a tiny queue caps concurrent requests so a fast-typed batch cannot fire dozens at once. */
+const lookupCache = new Map();
+const lookupQueue = [];
+let inflight = 0;
+const MAX_INFLIGHT = 3;
+
+function queueLookup(rowId, code){
+  code = String(code).trim();
+  if (!code) return;
+  const key = normBarcode(code);
+  if (lookupCache.has(key)) { applyLookupResult(rowId, code, lookupCache.get(key)); return; }
+  lookupQueue.push({ rowId, code, key });
+  pumpQueue();
+}
+
+function pumpQueue(){
+  while (inflight < MAX_INFLIGHT && lookupQueue.length) {
+    const job = lookupQueue.shift();
+    inflight++;
+    doLookup(job).finally(() => { inflight--; pumpQueue(); });
+  }
+}
+
+async function doLookup(job){
+  const d = await api(`?action=lookup&barcode=${encodeURIComponent(job.code)}`);
+  if (d.ok) lookupCache.set(job.key, d);
+  applyLookupResult(job.rowId, job.code, d);
+}
+
+function applyLookupResult(rowId, code, d){
+  const tr = rowEl(rowId);
+  if (!tr) return;                                  // row was removed while the request was in flight
+  const cur = tr.querySelector('.cell-barcode').value.trim();
+  if (normBarcode(cur) !== normBarcode(code)) return; // the cell moved on to a different code
+  const meta = { checked: true, product: null, notFound: false, offline: false };
+  if (!d.ok) meta.offline = true;
+  else if (d.found) meta.product = d.p;
+  else meta.notFound = true;
+  rowMeta.set(rowId, meta);
+  renderProductCell(rowId);
+  renderSummary();
+}
+
+/* ================= GRID =================
+   A spreadsheet-like table. State lives in the DOM inputs themselves (read on demand via
+   collectRows) plus a side map of per-row lookup results, since the primary job here is raw
+   typing speed, not a data-binding layer. */
+let rowSeq = 0;
+const rowMeta = new Map();   // rowId -> { checked, product, notFound, offline }
+
+function rowHtml(id, data = {}){
+  const barcode = esc(data.barcode || '');
+  const price = esc(data.price || '');
+  const flag = data.flag || 'normal';
+  const opt = (v, label) => `<option value="${v}"${flag === v ? ' selected' : ''}>${label}</option>`;
+  return `<tr data-row="${id}">
+    <td><input type="text" class="cell-barcode" inputmode="numeric" autocomplete="off" value="${barcode}"></td>
+    <td><input type="text" class="cell-price" inputmode="decimal" autocomplete="off" value="${price}"></td>
+    <td><select class="cell-flag">
+      ${opt('normal', 'ปกติ')}${opt('promo', 'โปรฯ')}${opt('short_shelf_life', 'ใกล้หมดอายุ')}
+    </select></td>
+    <td class="prodcell">—</td>
+    <td><button type="button" class="rm-row" tabindex="-1" title="ลบแถว" data-rm="${id}">×</button></td>
+  </tr>`;
+}
+
+function rowEl(id){ return $('gridBody').querySelector(`tr[data-row="${id}"]`); }
+function allRowIds(){ return [...$('gridBody').querySelectorAll('tr')].map(tr => Number(tr.dataset.row)); }
+function focusCell(id, col){ const tr = rowEl(id); if (tr) { const el = tr.querySelector(`.cell-${col}`); if (el) el.focus(); } }
+
+function addRow(data = {}, focus = true){
+  const id = ++rowSeq;
+  $('gridBody').insertAdjacentHTML('beforeend', rowHtml(id, data));
+  rowMeta.set(id, { checked: false, product: null, notFound: false, offline: false });
+  if (data.barcode) { updateBarcodeValidity(id); setProductSearching(id); queueLookup(id, data.barcode); }
+  if (focus) focusCell(id, 'barcode');
+  return id;
+}
+
+function removeRow(id){
+  const tr = rowEl(id);
+  if (!tr) return;
+  tr.remove();
+  rowMeta.delete(id);
+  if (!allRowIds().length) addRow({}, false);   // the grid always keeps at least one row to type into
+  saveDraft(); renderSummary(); updateSubmitButton();
+}
+
+function updateBarcodeValidity(id){
+  const tr = rowEl(id); if (!tr) return;
+  const inp = tr.querySelector('.cell-barcode');
+  const v = inp.value.trim();
+  // Warn only — some real codes in the master have unusual lengths, so this must never block typing.
+  const bad = !!v && !isValidBarcode(v);
+  inp.classList.toggle('bad-check', bad);
+  inp.title = bad ? 'เลขบาร์โค้ดอาจพิมพ์ผิด' : '';
+}
+
+function setProductSearching(id){
+  const tr = rowEl(id); if (!tr) return;
+  tr.querySelector('.prodcell').classList.remove('found', 'miss');
+  tr.querySelector('.prodcell').textContent = 'กำลังค้นหา…';
+}
+
+function renderProductCell(id){
+  const tr = rowEl(id); if (!tr) return;
+  const cell = tr.querySelector('.prodcell');
+  const meta = rowMeta.get(id) || {};
+  cell.classList.remove('found', 'miss');
+  if (meta.product) {
+    const p = meta.product;
+    cell.textContent = [p.brand, p.item, p.sku].filter(Boolean).join(' ') || p.barcode || '—';
+    cell.classList.add('found');
+  } else if (meta.notFound) {
+    cell.textContent = 'ไม่พบ';
+    cell.classList.add('miss');
+  } else if (meta.offline) {
+    cell.textContent = 'ไม่มีสัญญาณ';
+  } else {
+    cell.textContent = '—';
+  }
+}
+
+/** A barcode cell was committed — by Enter or by leaving the cell. This is the single trigger
+ *  for both validation and the background lookup, so every path (Enter, Tab, arrow, click-away)
+ *  behaves the same way. */
+function commitBarcode(id){
+  const tr = rowEl(id); if (!tr) return;
+  const inp = tr.querySelector('.cell-barcode');
+  const v = inp.value.trim();
+  if (inp.value !== v) inp.value = v;
+  updateBarcodeValidity(id);
+  rowMeta.set(id, { checked: false, product: null, notFound: false, offline: false });
+  if (v) { setProductSearching(id); queueLookup(id, v); }
+  else renderProductCell(id);
+  saveDraft(); renderSummary(); updateSubmitButton();
+}
+
+function moveVert(id, dir, col){
+  const ids = allRowIds();
+  const idx = ids.indexOf(id);
+  const t = idx + dir;
+  if (t < 0 || t >= ids.length) return;
+  focusCell(ids[t], col);
+}
+
+/** The core rhythm: barcode -> Enter -> price -> Enter -> a fresh row, focused and ready. If the
+ *  price being edited is not the last row (the user went back to fix something), Enter simply
+ *  steps to the next row instead of inserting — inserting mid-grid would be a surprise. */
+function advanceAfterPrice(id){
+  const ids = allRowIds();
+  const idx = ids.indexOf(id);
+  if (idx === ids.length - 1) addRow({}, true);
+  else focusCell(ids[idx + 1], 'barcode');
+}
+
+function collectRows(){
+  return allRowIds().map(id => {
+    const tr = rowEl(id);
+    return {
+      id,
+      barcode: tr.querySelector('.cell-barcode').value.trim(),
+      price: tr.querySelector('.cell-price').value.trim(),
+      flag: tr.querySelector('.cell-flag').value
+    };
+  });
+}
+
+/* ================= SUMMARY (right pane) ================= */
+function renderSummary(){
+  const rows = allRowIds()
+    .map(id => ({ id, barcode: rowEl(id).querySelector('.cell-barcode').value.trim(), meta: rowMeta.get(id) || {} }))
+    .filter(r => r.barcode);   // the always-present trailing blank row is not a real entry
+
+  const total = rows.length;
+  const resolved = rows.filter(r => r.meta.product).length;
+  const notFound = rows.filter(r => r.meta.notFound).length;
+  const badCheck = rows.filter(r => !isValidBarcode(r.barcode)).length;
+
+  $('statTotal').textContent = String(total);
+  $('statResolved').textContent = String(resolved);
+  $('statNotFound').textContent = String(notFound);
+  $('statBadCheck').textContent = String(badCheck);
+
+  const unresolved = rows.filter(r => r.meta.notFound || !isValidBarcode(r.barcode));
+  const box = $('unresolvedList');
+  if (!unresolved.length) {
+    box.innerHTML = '<div class="empty-note">ไม่มีรายการค้าง</div>';
+  } else {
+    box.innerHTML = unresolved.map(r => {
+      const reason = !isValidBarcode(r.barcode) ? 'เลขอาจพิมพ์ผิด' : 'ไม่พบสินค้า';
+      return `<button type="button" class="unresolved-item" data-focus="${r.id}">
+        <span class="uc">${esc(r.barcode)}</span><span class="ur">${esc(reason)}</span>
+      </button>`;
+    }).join('');
+  }
+}
+
+function updateSubmitButton(){
+  const rows = collectRows();
+  const valid = rows.filter(r => r.barcode && priceValue(r.price) !== null);
+  $('submitBtn').textContent = `บันทึกทั้งหมด (${valid.length} รายการ)`;
+  $('submitBtn').disabled = !valid.length || !S.storeId;
+}
+
+/* ================= DRAFT PERSISTENCE =================
+   The whole batch — store, date, mode, every row — is saved on every change. Losing 40 typed
+   rows to an accidentally-closed tab is not an acceptable failure mode for this tool. */
+function saveDraft(){
+  const rows = collectRows().map(r => ({ barcode: r.barcode, price: r.price, flag: r.flag }));
+  ls.set('ps_admin_draft', {
+    storeId: S.storeId, storeName: S.store, date: $('dateInput').value, mode: S.mode, rows
+  });
+}
+let draftT;
+function scheduleDraftSave(){ clearTimeout(draftT); draftT = setTimeout(saveDraft, 200); }
+
+function restoreDraft(){
+  const d = ls.get('ps_admin_draft', null);
+  if (!d) { addRow({}, false); return; }
+  if (d.date) $('dateInput').value = d.date;
+  if (d.storeId) { S.storeId = d.storeId; S.store = d.storeName || ''; $('storeInput').value = S.store; }
+  const rows = Array.isArray(d.rows) && d.rows.length ? d.rows : [{}];
+  rows.forEach(r => addRow(r, false));
+  if (d.mode) setMode(d.mode, false);
+}
+
+function clearGridKeepStoreDate(){
+  $('gridBody').innerHTML = '';
+  rowMeta.clear();
+  addRow({}, true);
+  saveDraft(); renderSummary(); updateSubmitButton();
+}
+
+/* ================= SUBMIT ================= */
+function todayStr(){
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+// The visit date is chosen by the user, not "now" — a shelf photo taken last week must be
+// dated when it was seen, or every downstream comparison is silently wrong.
+/**
+ * The visit date as an ISO timestamp at LOCAL noon.
+ *
+ * `new Date("2026-08-20")` parses a date-only string as midnight UTC, which lands on the
+ * previous calendar day in any timezone behind UTC and sits right on the boundary for the
+ * rest. Noon is safely inside the intended day everywhere, so a shelf photo from the 20th is
+ * recorded as the 20th no matter where the browser is.
+ */
+function visitISO(dateVal){ return new Date(dateVal + 'T12:00:00').toISOString(); }
+
+let submitting = false;
+/** Rebuild the grid containing only the rows the server did not confirm. */
+function keepOnlyFailedRows(failed){
+  const byCode = new Map(failed.map(f => [String(f.barcode) + '|' + f.price, f]));
+  const survivors = collectRows().filter(r =>
+    byCode.has(String(r.barcode) + '|' + priceValue(r.price)));
+  clearGridKeepStoreDate();
+  survivors.forEach(r => addRow(r, false));
+  if (!survivors.length) addRow({}, false);
+  saveDraft(); renderSummary();
+}
+
+async function submitBatch(){
+  if (submitting) return;
+  if (!S.storeId) { toast('ยังไม่ได้เลือกร้าน', true); return; }
+  const dateVal = $('dateInput').value;
+  if (!dateVal) { toast('ยังไม่ได้เลือกวันที่', true); return; }
+
+  const ts = visitISO(dateVal);
+  const rows = collectRows();
+  const items = [];
+  let skipped = 0;
+  rows.forEach(r => {
+    const pv = priceValue(r.price);
+    if (!r.barcode || pv === null) { skipped++; return; }
+    items.push(buildObs({
+      obsId: makeId('O'), ts, storeId: S.storeId,
+      barcode: r.barcode, price: pv, flag: r.flag, by: DEVICE, source: 'manual'
+    }));
+  });
+
+  if (!items.length) { toast('ไม่มีรายการที่บันทึกได้', true); return; }
+
+  submitting = true;
+  $('submitBtn').disabled = true;
+  setSubmitStatus(`กำลังบันทึก ${items.length} รายการ…`);
+
+  const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ type: 'batch', items }) }, 30000);
+
+  submitting = false;
+
+  if (!d.ok || !Array.isArray(d.results)) {
+    // Draft stays intact on failure — nothing typed is thrown away over a bad connection.
+    setSubmitStatus('บันทึกไม่สำเร็จ — ข้อมูลยังอยู่ในฉบับร่าง ลองใหม่อีกครั้ง', true);
+    toast('บันทึกไม่สำเร็จ', true);
+    updateSubmitButton();
+    return;
+  }
+
+  // "duplicate" means the row is already safely in the Sheet — done, not failed.
+  const ok = new Set(d.results.filter(r => r.status === 'written' || r.status === 'duplicate')
+                              .map(r => r.id));
+  const failed = items.filter(it => !ok.has(it.obs_id));
+  const skipMsg = skipped ? ` · ข้ามไป ${skipped} แถว (ว่างหรือไม่มีราคา)` : '';
+
+  if (failed.length) {
+    // Never clear rows the server did not confirm. Silently dropping typed work because the
+    // response "looked" successful is the worst outcome this page can produce.
+    keepOnlyFailedRows(failed);
+    setSubmitStatus(`บันทึก ${ok.size} รายการ · ${failed.length} แถวไม่สำเร็จ ยังอยู่ในตาราง`, true);
+    toast(`${failed.length} แถวไม่สำเร็จ`, true);
+    updateSubmitButton();
+    return;
+  }
+
+  setSubmitStatus(`บันทึกสำเร็จ ${ok.size} รายการ${skipMsg}`);
+  toast(`บันทึกแล้ว ${ok.size} รายการ`);
+  clearGridKeepStoreDate();
+}
+
+/* ================= MODE / TABS ================= */
+function setMode(mode, persist = true){
+  S.mode = mode;
+  $('modeBarcodeBtn').classList.toggle('on', mode === 'barcode');
+  $('modeSelectBtn').classList.toggle('on', mode === 'select');
+  $('barcodeGridWrap').classList.toggle('hidden', mode !== 'barcode');
+  $('summaryCard').classList.toggle('hidden', mode !== 'barcode');
+  $('selectModeCard').classList.toggle('hidden', mode !== 'select');
+  if (persist) saveDraft();
+}
+
+function showScreen(which){
+  $('entryScreen').classList.toggle('hidden', which !== 'entry');
+  $('reviewScreen').classList.toggle('hidden', which !== 'review');
+  $('storesScreen').classList.toggle('hidden', which !== 'stores');
+  $('tabEntry').classList.toggle('on', which === 'entry');
+  $('tabReview').classList.toggle('on', which === 'review');
+  $('tabStores').classList.toggle('on', which === 'stores');
+}
+
+/* ================= WIRING ================= */
+$('storeInput').addEventListener('input', renderStoreDrop);
+$('storeInput').addEventListener('focus', renderStoreDrop);
+document.addEventListener('click', e => {
+  if (!e.target.closest('.combo')) $('storeDrop').classList.add('hidden');
+});
+
+$('dateInput').addEventListener('change', saveDraft);
+
+$('modeBarcodeBtn').addEventListener('click', () => setMode('barcode'));
+$('modeSelectBtn').addEventListener('click', () => setMode('select'));
+
+$('addRowBtn').addEventListener('click', () => addRow({}, true));
+
+$('gridBody').addEventListener('keydown', e => {
+  const t = e.target;
+  const tr = t.closest('tr'); if (!tr) return;
+  const id = Number(tr.dataset.row);
+  if (t.classList.contains('cell-barcode')) {
+    if (e.key === 'Enter') { e.preventDefault(); focusCell(id, 'price'); }        // -> commit fires via focusout
+    else if (e.key === 'ArrowDown') { e.preventDefault(); moveVert(id, 1, 'barcode'); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); moveVert(id, -1, 'barcode'); }
+  } else if (t.classList.contains('cell-price')) {
+    if (e.key === 'Enter') { e.preventDefault(); advanceAfterPrice(id); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); moveVert(id, 1, 'price'); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); moveVert(id, -1, 'price'); }
+  }
+});
+// Commits on ANY way of leaving the cell — Enter, Tab, arrow key, or a mouse click elsewhere —
+// so validation and lookup never depend on which path the user took out of the field.
+$('gridBody').addEventListener('focusout', e => {
+  if (e.target.classList.contains('cell-barcode')) {
+    const tr = e.target.closest('tr'); if (tr) commitBarcode(Number(tr.dataset.row));
+  }
+});
+$('gridBody').addEventListener('input', e => {
+  if (e.target.classList.contains('cell-price')) updateSubmitButton();
+  scheduleDraftSave();
+});
+$('gridBody').addEventListener('change', e => {
+  if (e.target.classList.contains('cell-flag')) saveDraft();
+});
+$('gridBody').addEventListener('click', e => {
+  const btn = e.target.closest('.rm-row');
+  if (btn) removeRow(Number(btn.dataset.rm));
+});
+
+$('unresolvedList').addEventListener('click', e => {
+  const btn = e.target.closest('[data-focus]');
+  if (btn) focusCell(Number(btn.dataset.focus), 'barcode');
+});
+
+$('submitBtn').addEventListener('click', submitBatch);
+
+$('tabEntry').addEventListener('click', () => showScreen('entry'));
+$('tabReview').addEventListener('click', () => showScreen('review'));
+$('tabStores').addEventListener('click', () => showScreen('stores'));
+
+/* ================= INIT ================= */
+function init(){
+  $('dateInput').value = todayStr();
+  restoreDraft();               // may overwrite date/store/mode/rows from a saved draft
+  updateSubmitButton();
+  renderSummary();
+  showScreen('entry');
+  refreshStores();
+  if (S.mode === 'barcode') { const ids = allRowIds(); if (ids.length) focusCell(ids[0], 'barcode'); }
+}
+init();
+</script>
+</body>
+</html>
