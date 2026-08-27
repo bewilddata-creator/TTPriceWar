@@ -1058,6 +1058,15 @@ function init(){
   flushOutbox(true);
 }
 init();
+
+// Registered on load, not at parse time, so it never competes with the app becoming
+// interactive; failure is silent because a shop with no signal is exactly the case where
+// this must not block or error the page — the app already works without it this one time.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  });
+}
 </script>
 </body>
 </html>
