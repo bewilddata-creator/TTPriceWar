@@ -1,6 +1,24 @@
 /**
- * PRICE SCOUT — backend v4
- * = v3 (capture endpoints unchanged) + "viewdata" endpoint for the viewer page.
+ * PRICE SCOUT — backend v5
+ * = v4 + idempotent writes, batch POST, delta endpoint, and a monotonic `seq` column.
+ *
+ * WHAT CHANGED FROM v4, AND WHY
+ *  1. Retries no longer duplicate rows. v4 appended unconditionally, so a POST that reached
+ *     the Sheet but whose response was lost — what a weak signal does — was retried and
+ *     written twice. A repeated obs_id now reports "duplicate" instead.
+ *  2. An unknown `type` no longer silently succeeds. v4 wrote nothing and still returned
+ *     ok:true, so the client discarded the row. That was silent data loss.
+ *  3. Zero-padded barcodes no longer create duplicate Products rows. The Sheet stores
+ *     barcodes as numbers, so a 12-digit UPC-A is 773602335374; a phone reporting
+ *     0773602335374 did not match. Both sides now normalise before comparing.
+ *  4. POST accepts {type:"batch", items:[...]} — a shop's worth of queued rows in one call.
+ *  5. GET ?action=delta&after_seq=N returns only products added since the caller's snapshot.
+ *
+ * NOTHING DEPENDS ON ROW ORDER. delta keys on the `seq` column and retry detection keys on
+ * the cache, so sorting any tab is harmless. People sort spreadsheets; assuming otherwise
+ * is a defect waiting to happen.
+ *
+ * FIRST-TIME SETUP: run backfillSeq() ONCE from the editor before deploying.
  *
  * TO UPDATE WITHOUT BREAKING THE CAPTURE PAGE (keeps the same /exec URL):
  * 1. Apps Script editor → select all → paste this file → Save
@@ -11,13 +29,67 @@
 const CDN_PREFIX = "https://prodenbcdn.azureedge.net/products/";
 const PHOTO_FOLDER = "PriceScout Photos";
 const FLAGS = ["normal", "promo", "short_shelf_life"];
+const SEQ_COL = 15;              // Products column O — monotonic append counter
+const RECENT_OBS_WINDOW = 300;   // fallback only; the cache is the real retry guard
+const OBS_CACHE_SEC = 21600;     // 6h — far longer than any realistic retry
+
+/** Match the client's normalisation: digits only, no leading zeros. */
+function normBarcode(v) {
+  return String(v == null ? "" : v).replace(/\D/g, "").replace(/^0+/, "") || "0";
+}
+
+/**
+ * One-time setup. Run manually from the Apps Script editor, once, before deploying v5.
+ * Safe to run again — rows that already carry a seq keep it.
+ */
+function backfillSeq() {
+  const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
+  const last = ps.getLastRow();
+  if (last < 2) return;
+  ps.getRange(1, SEQ_COL).setValue("seq");
+  const cur = ps.getRange(2, SEQ_COL, last - 1, 1).getValues();
+  const out = cur.map(function (r, i) { return [Number(r[0]) || (i + 1)]; });
+  ps.getRange(2, SEQ_COL, last - 1, 1).setValues(out);
+  Logger.log("stamped " + out.length + " products");
+}
+
+/** Highest seq in use. Read once per request, never per record. */
+function maxSeq(ps) {
+  const last = ps.getLastRow();
+  if (last < 2) return 0;
+  const v = ps.getRange(2, SEQ_COL, last - 1, 1).getValues();
+  let m = 0;
+  for (let i = 0; i < v.length; i++) { const n = Number(v[i][0]) || 0; if (n > m) m = n; }
+  return m;
+}
+
+/* ================= Sheet menu ================= */
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu("Price Scout")
+    .addItem("เรียงลำดับสินค้ากลับเป็นเดิม", "restoreProductOrder")
+    .addToUi();
+}
+
+/**
+ * Put Products back in its original order after someone has sorted it.
+ * With `seq` in place nothing breaks when the tab is sorted — this is convenience.
+ */
+function restoreProductOrder() {
+  const ui = SpreadsheetApp.getUi();
+  const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
+  const last = ps.getLastRow(), cols = ps.getLastColumn();
+  if (last < 3) { ui.alert("ไม่มีข้อมูลให้เรียง"); return; }
+  ps.getRange(2, 1, last - 1, cols).sort({ column: SEQ_COL, ascending: true });
+  ui.alert("เรียงลำดับสินค้ากลับเป็นเดิมแล้ว (" + (last - 1) + " รายการ)");
+}
 
 /* ================= GET ================= */
 function doGet(e) {
   const action = (e && e.parameter && e.parameter.action) || "";
   if (action === "bootstrap") return bootstrap();
   if (action === "viewdata") return viewdata();
-  return json({ ok: true, msg: "Price Scout API v4" });
+  if (action === "delta") return delta(e.parameter.after_seq);
+  return json({ ok: true, msg: "Price Scout API v5" });
 }
 
 /* ---- capture page: products (light) + stores ---- */
@@ -27,8 +99,9 @@ function bootstrap() {
   let products = [];
   if (ps.getLastRow() > 1) {
     const v = ps.getRange(2, 1, ps.getLastRow() - 1, 10).getValues();
+    // size and unit are appended LAST so indexes 0-4 keep their meaning for older clients
     products = v.map(r => [String(r[0]), r[1] || "", r[2] || "", r[3] || "",
-      String(r[9] || "").replace(CDN_PREFIX, "~")]).filter(r => r[0]);
+      String(r[9] || "").replace(CDN_PREFIX, "~"), r[4] || "", r[5] || ""]).filter(r => r[0]);
   }
   const st = ss.getSheetByName("Stores");
   let stores = [];
@@ -36,7 +109,35 @@ function bootstrap() {
     const v = st.getRange(2, 1, st.getLastRow() - 1, 2).getValues();
     stores = v.filter(r => r[0] && r[1]).map(r => [String(r[0]), String(r[1])]);
   }
-  return json({ ok: true, cdn: CDN_PREFIX, p: products, s: stores });
+  return json({ ok: true, cdn: CDN_PREFIX, seq: maxSeq(ps), p: products, s: stores });
+}
+
+/**
+ * Products whose seq is above the caller's. Order-independent by construction: sorting the
+ * tab moves rows around but never changes a seq, so the same set comes back either way.
+ * Reads one column, then only the rows that actually qualify — usually none.
+ */
+function delta(afterSeq) {
+  const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
+  const last = ps.getLastRow();
+  if (last < 2) return json({ ok: true, seq: 0, p: [] });
+
+  const seqs = ps.getRange(2, SEQ_COL, last - 1, 1).getValues();
+  const after = Number(afterSeq || 0);
+  let top = 0;
+  const rows = [];
+  for (let i = 0; i < seqs.length; i++) {
+    const n = Number(seqs[i][0]) || 0;
+    if (n > top) top = n;
+    if (n > after) rows.push(i + 2);          // sheet row number
+  }
+  if (!rows.length) return json({ ok: true, seq: top, p: [] });
+
+  const p = rows.map(function (rowNum) {
+    const r = ps.getRange(rowNum, 1, 1, 4).getValues()[0];
+    return [String(r[0]), r[1] || "", r[2] || "", r[3] || ""];
+  });
+  return json({ ok: true, seq: top, p: p });
 }
 
 /* ---- viewer page: everything, dictionary-compressed ---- */
@@ -109,52 +210,109 @@ function viewdata() {
                 p: p, s: s, o: o, t: t, generated: day(new Date()) });
 }
 
-/* ================= POST (unchanged from v3) ================= */
+/* ================= POST ================= */
 function doPost(e) {
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
   try {
     const d  = JSON.parse(e.postData.contents);
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const ts = d.ts ? new Date(d.ts) : new Date();
-
-    if (d.new_store && d.new_store.store_id && d.new_store.store) {
-      const sh = ss.getSheetByName("Stores");
-      const names = sh.getLastRow() > 1 ? sh.getRange(2, 2, sh.getLastRow() - 1, 1).getValues().flat() : [];
-      if (names.indexOf(d.new_store.store) < 0)
-        sh.appendRow([d.new_store.store_id, d.new_store.store, "", "", "created from app"]);
-    }
-
-    if (d.new_product && d.barcode) {
-      const ps = ss.getSheetByName("Products");
-      const codes = ps.getLastRow() > 1 ? ps.getRange(2, 1, ps.getLastRow() - 1, 1).getValues().flat().map(String) : [];
-      if (codes.indexOf(String(d.barcode)) < 0) {
-        let img = "";
-        if (d.new_product.photo) img = savePhoto(d.new_product.photo, "prod_" + d.barcode);
-        const np = d.new_product;
-        const hasNames = (np.brand || np.item);
-        ps.appendRow(["'" + String(d.barcode), np.brand || "", np.item || "", np.sku || "",
-                      "", "", "", "", "", img, "field_scan", hasNames ? "" : "YES", ts, ""]);
-      }
-    }
-
-    if (d.type === "obs") {
-      ss.getSheetByName("Observations").appendRow([
-        d.obs_id || ("O-" + ts.getTime()), ts, d.store_id || "", "'" + String(d.barcode || ""),
-        d.price, d.flag || "normal", d.source || "scan", d.by || ""
-      ]);
-    } else if (d.type === "tunsong") {
-      ss.getSheetByName("Tunsong").appendRow([
-        d.ts_id || ("T-" + ts.getTime()), ts, d.store_id || "", "'" + String(d.barcode || ""),
-        d.price, d.info_source || "", d.confidence || "", d.notes || ""
-      ]);
-    }
-    return json({ ok: true });
+    const items = (d.type === "batch" && Array.isArray(d.items)) ? d.items : [d];
+    const ctx = newWriteContext(ss);
+    const results = items.map(function (item) { return writeOne(ss, item, ctx); });
+    const bad = results.filter(function (r) { return r.status === "unknown_type"; });
+    return json({ ok: bad.length === 0, results: results });
   } catch (err) {
     return json({ ok: false, error: String(err) });
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * Read the lookups once per request rather than once per record.
+ *
+ * Retry detection is cache-first. Scanning "the last N rows" would depend on Observations
+ * still being in insertion order, which no one can guarantee — a sorted tab would hide a
+ * retry and let a duplicate through. The cache does not care about order. The row scan is
+ * kept only as a fallback for a cache eviction.
+ */
+function newWriteContext(ss) {
+  const cache = CacheService.getScriptCache();
+  const os = ss.getSheetByName("Observations");
+  const last = os.getLastRow();
+  const from = Math.max(2, last - RECENT_OBS_WINDOW);
+  const recentIds = last > 1
+    ? os.getRange(from, 1, last - from + 1, 1).getValues().flat().map(String)
+    : [];
+
+  const ps = ss.getSheetByName("Products");
+  const codes = {};
+  if (ps.getLastRow() > 1) {
+    ps.getRange(2, 1, ps.getLastRow() - 1, 1).getValues()
+      .forEach(function (r) { if (r[0] !== "" && r[0] != null) codes[normBarcode(r[0])] = true; });
+  }
+
+  const sh = ss.getSheetByName("Stores");
+  const storeNames = sh.getLastRow() > 1
+    ? sh.getRange(2, 2, sh.getLastRow() - 1, 1).getValues().flat().map(String)
+    : [];
+
+  return { cache: cache, recentIds: recentIds, codes: codes,
+           storeNames: storeNames, nextSeq: maxSeq(ps) + 1 };
+}
+
+/** True when this obs_id has already been written. Cache first, row scan as a fallback. */
+function alreadyWritten(ctx, id) {
+  if (ctx.cache.get("obs:" + id)) return true;
+  return ctx.recentIds.indexOf(id) >= 0;
+}
+
+function writeOne(ss, d, ctx) {
+  const ts = d.ts ? new Date(d.ts) : new Date();
+
+  if (d.new_store && d.new_store.store_id && d.new_store.store) {
+    if (ctx.storeNames.indexOf(d.new_store.store) < 0) {
+      ss.getSheetByName("Stores")
+        .appendRow([d.new_store.store_id, d.new_store.store, "", "", "created from app"]);
+      ctx.storeNames.push(d.new_store.store);
+    }
+  }
+
+  if (d.new_product && d.barcode) {
+    const key = normBarcode(d.barcode);          // zero-padded UPC-A no longer duplicates
+    if (!ctx.codes[key]) {
+      let img = "";
+      if (d.new_product.photo) img = savePhoto(d.new_product.photo, "prod_" + key);
+      const np = d.new_product;
+      const hasNames = (np.brand || np.item);
+      ss.getSheetByName("Products").appendRow(["'" + String(d.barcode), np.brand || "",
+        np.item || "", np.sku || "", "", "", "", "", "", img,
+        "field_scan", hasNames ? "" : "YES", ts, "", ctx.nextSeq++]);
+      ctx.codes[key] = true;
+    }
+  }
+
+  if (d.type === "obs") {
+    const id = d.obs_id || ("O-" + ts.getTime());
+    if (alreadyWritten(ctx, id)) return { id: id, status: "duplicate" };
+    ss.getSheetByName("Observations").appendRow([id, ts, d.store_id || "",
+      "'" + String(d.barcode || ""), d.price, d.flag || "normal",
+      d.source || "scan", d.by || ""]);
+    ctx.recentIds.push(id);
+    ctx.cache.put("obs:" + id, "1", OBS_CACHE_SEC);
+    return { id: id, status: "written" };
+  }
+
+  if (d.type === "tunsong") {
+    const tid = d.ts_id || ("T-" + ts.getTime());
+    ss.getSheetByName("Tunsong").appendRow([tid, ts, d.store_id || "",
+      "'" + String(d.barcode || ""), d.price, d.info_source || "",
+      d.confidence || "", d.notes || ""]);
+    return { id: tid, status: "written" };
+  }
+
+  return { id: d.obs_id || d.ts_id || "", status: "unknown_type" };
 }
 
 /* ================= helpers ================= */
