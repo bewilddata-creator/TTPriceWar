@@ -56,7 +56,7 @@ Mobile ships first and completely, then the web app.
 
 | Milestone | Delivers | Covers |
 |---|---|---|
-| **M1 — the fast loop** | Rewritten `index.html` + `core.js`; Apps Script **v5** (idempotent writes, batch POST, delta) | R1, R3 |
+| **M1 — the fast loop** | Rewritten `index.html` + `core.js`; Apps Script **v6** (idempotent writes, batch POST, per-scan lookup) | R1, R3 |
 | **M2 — compare** | Scan-to-compare view on the same screen | R2 |
 | **M3 — the desk** | New `admin.html` + Apps Script v5 | R4 |
 
@@ -82,54 +82,41 @@ iframe blocks `getUserMedia` and kills the camera.
 
 ---
 
-## 5. The catalog delivery problem — and the fix
+## 5. Product data: resolved per scan, not downloaded
 
-**This is the single biggest cause of slowness today, and it is not in the UI.**
+**Decision (2026-08-27, Ooa): the capture page does not download the product master.**
 
-Measured against the live v4 API:
+The measured cost of the old approach against the live v4 API:
 
 | | raw | over the wire | time |
 |---|---|---|---|
-| `?action=bootstrap` today | 3.15 MB | 966 KB gzipped | **7.7 s** |
-| catalog without image URLs | 1.74 MB | 425 KB | — |
-| image URLs alone | 1.41 MB | 472 KB | — |
+| `?action=bootstrap` | 3.15 MB | 966 KB gzipped | **7.7 s** |
 
-Every app open costs 966 KB of mobile data and 7.7 seconds of spinner, and over half of it is image
-URLs. It is also stored in `localStorage`, which is at its ~5 MB ceiling.
+A static snapshot on GitHub Pages was built and measured at 446 KB gzipped, cached in IndexedDB
+behind a service worker — fast after the first open, and fully offline. It was **rejected**: this app
+exists to type a price, and shipping the entire 26,289-product master to do that is disproportionate.
 
-**The fix, in four parts:**
+**What ships instead:** `GET ?action=lookup&barcode=<code>` returns one product. The request is
+fired the moment a barcode is decoded and resolves **while the price is being typed**, so its round
+trip sits inside a gap the user was already filling rather than in front of them. Results are cached
+for the session, so a rescan is instant.
 
-1. **Static snapshot.** `catalog.json` — `[barcode, brand, item, sku]` for all products —
-   committed to the repo and served by GitHub Pages' CDN. ~425 KB gzipped, delivered in well under a
-   second instead of 7.7. Regenerated and committed when the product master materially changes
-   (a new retailer import), which is rare.
-2. **Images off the critical path.** `images.json` loads in the background *after* the app is
-   usable, or not at all on a slow connection. A scan shows brand/item/sku instantly; the photo
-   appears when it appears.
-3. **IndexedDB, not localStorage.** Removes the 5 MB cliff. (`viewer.html` already does this.)
-4. **Delta on open.** One small call — `GET ?action=delta&after_seq=<mark>` — returns only the
-   products added since the snapshot. Keyed on a new monotonic **`seq`** column, not on row position
-   and not on a date. Row position would break the moment anyone sorted the tab, and a date cutoff
-   would return the whole catalog, since the seed's `first_seen` is the same day the snapshot was
-   built. `seq` is stamped once when a product is appended and never changes, so **sorting any tab is
-   harmless**. Typically a handful of rows, a few KB. A manual "รีเฟรชข้อมูล" button forces a full
-   refetch when Products has been *edited* rather than appended.
+**What this costs, stated plainly:**
 
-**Result:** first install downloads the catalog once. Every open after that transfers a few KB,
-starts instantly, and **works with no signal at all** — which matters in border towns.
+- With no signal, a scan shows no product name. Prices are still captured correctly, but a mis-scan
+  is not caught until someone reviews the data at a desk.
+- The app can no longer tell a known barcode from a new one. It does not need to: every save carries
+  an empty `new_product`, and the **backend** decides — an existing barcode gets an observation only,
+  an unknown one also gets a `needs_info` Products row. Without this, an observation could point at a
+  product that does not exist, and `viewdata` drops such rows silently.
 
-`size` and `unit` are **not** in the M1 snapshot: `bootstrap` does not return them today, so adding
-them requires an Apps Script change. They arrive with M2, where they matter — a comparison screen
-that hides them is misleading, because ฿129 for 150 G and ฿129 for 50 G are not the same price.
+`size` and `unit` come back with the lookup, so M2's comparison never presents ฿129/150 G and
+฿129/50 G as the same price.
 
-**Barcode storage — verified against the real export, and a correction to the handover.** Every
-barcode in the Sheet is stored as a *number*, in all 26,289 Products and all 45,165 Observations, so
-leading zeros are already gone. 2,124 products carry 12-digit UPC-A codes that a phone may scan as
-13 digits with a leading zero, and no 13-digit code in the Sheet starts with zero — so those lookups
-miss every time, and the app silently creates duplicate products. Every lookup normalises before
-matching. Tested across the full master: 2,124 recovered, zero collisions, no exact match lost.
-
----
+**Nothing may hang the UI.** Every network call carries a timeout and a failure path. The first
+build of this shell had an unguarded `indexedDB.open` whose promise never settled, leaving the page
+on a loading message with no error and no way forward — the exact failure that strands someone in a
+shop. The app is interactive before any request completes.
 
 ## 6. M1 — Mobile capture, the fast loop
 
@@ -172,14 +159,20 @@ No brand field, no SKU field, no required input. Three text fields at a shelf is
   loses.
 - Tapping a session row re-opens it for price correction while it is still in the buffer
 
-### 6.6 Offline and install
+### 6.6 Navigation
+
+The phone does two jobs — capture a price and look one up — so the app carries a **two-tab bar**:
+**เก็บราคา** and **ค้นหาราคา**. One tap between them, no menu. The store picker uses a real
+filtered dropdown, not `<datalist>`, which renders inconsistently on mobile and cannot be styled.
+
+### 6.7 Offline and install
 - PWA: manifest, icon, `display: standalone`
 - Service worker caches the app shell and `catalog.json` — the app **opens and scans with no signal**,
   which the current version cannot do
 - Observations queue locally and flush on reconnect (already works; keep it, and surface a visible
   pending count so nothing looks lost)
 
-### 6.7 Store selection
+### 6.8 Store selection
 - Sticky, and **persisted across reloads** — currently a page refresh dumps you back to the picker
 - Recent stores as tap chips; typing a new name creates the store
 

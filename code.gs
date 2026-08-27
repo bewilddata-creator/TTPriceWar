@@ -1,6 +1,11 @@
 /**
- * PRICE SCOUT — backend v5
- * = v4 + idempotent writes, batch POST, delta endpoint, and a monotonic `seq` column.
+ * PRICE SCOUT — backend v6
+ * = v5 + single-barcode lookup and a stores endpoint.
+ *
+ * WHY v6: the capture page no longer downloads the product master. It resolves one barcode
+ * at a time while the user is typing the price, so the round trip is hidden rather than
+ * waited on. `delta` and the `seq` column stay — they cost nothing and the viewer may use
+ * them later.
  *
  * WHAT CHANGED FROM v4, AND WHY
  *  1. Retries no longer duplicate rows. v4 appended unconditionally, so a POST that reached
@@ -89,7 +94,9 @@ function doGet(e) {
   if (action === "bootstrap") return bootstrap();
   if (action === "viewdata") return viewdata();
   if (action === "delta") return delta(e.parameter.after_seq);
-  return json({ ok: true, msg: "Price Scout API v5" });
+  if (action === "lookup") return lookup(e.parameter.barcode);
+  if (action === "stores") return stores();
+  return json({ ok: true, msg: "Price Scout API v6" });
 }
 
 /* ---- capture page: products (light) + stores ---- */
@@ -138,6 +145,45 @@ function delta(afterSeq) {
     return [String(r[0]), r[1] || "", r[2] || "", r[3] || ""];
   });
   return json({ ok: true, seq: top, p: p });
+}
+
+/**
+ * One barcode -> one product, or found:false. Normalises both sides, so a UPC-A scanned as
+ * a zero-padded EAN-13 still resolves. Reads column A once (~26k cells, well under a second)
+ * and then only the matching row.
+ */
+function lookup(barcode) {
+  const key = normBarcode(barcode || "");
+  if (!key) return json({ ok: true, found: false });
+  const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
+  const last = ps.getLastRow();
+  if (last < 2) return json({ ok: true, found: false });
+
+  const codes = ps.getRange(2, 1, last - 1, 1).getValues();
+  let row = -1;
+  for (let i = 0; i < codes.length; i++) {
+    if (normBarcode(codes[i][0]) === key) { row = i + 2; break; }
+  }
+  if (row < 0) return json({ ok: true, found: false, barcode: String(barcode) });
+
+  const r = ps.getRange(row, 1, 1, 12).getValues()[0];
+  return json({ ok: true, found: true, p: {
+    barcode: String(r[0]), brand: r[1] || "", item: r[2] || "", sku: r[3] || "",
+    size: r[4] || "", unit: r[5] || "",
+    img: String(r[9] || "").replace(CDN_PREFIX, "~"), cdn: CDN_PREFIX,
+    needs_info: r[11] === "YES"
+  }});
+}
+
+/** The store list. Tiny tab; the picker caches this and refreshes it on open. */
+function stores() {
+  const st = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Stores");
+  if (st.getLastRow() < 2) return json({ ok: true, s: [] });
+  const v = st.getRange(2, 1, st.getLastRow() - 1, 4).getValues();
+  const s = v.filter(function (r) { return r[0] && r[1]; })
+             .map(function (r) { return [String(r[0]), String(r[1]),
+                                         String(r[2] || ""), String(r[3] || "")]; });
+  return json({ ok: true, s: s });
 }
 
 /* ---- viewer page: everything, dictionary-compressed ---- */
@@ -254,11 +300,12 @@ function newWriteContext(ss) {
   }
 
   const sh = ss.getSheetByName("Stores");
-  const storeNames = sh.getLastRow() > 1
-    ? sh.getRange(2, 2, sh.getLastRow() - 1, 1).getValues().flat().map(String)
-    : [];
+  const srows = sh.getLastRow() > 1
+    ? sh.getRange(2, 1, sh.getLastRow() - 1, 2).getValues() : [];
+  const storeIds   = srows.map(function (r) { return String(r[0]); });
+  const storeNames = srows.map(function (r) { return String(r[1]); });
 
-  return { cache: cache, recentIds: recentIds, codes: codes,
+  return { cache: cache, recentIds: recentIds, codes: codes, storeIds: storeIds,
            storeNames: storeNames, nextSeq: maxSeq(ps) + 1 };
 }
 
@@ -271,11 +318,20 @@ function alreadyWritten(ctx, id) {
 function writeOne(ss, d, ctx) {
   const ts = d.ts ? new Date(d.ts) : new Date();
 
+  // If this store name already exists, the row is NOT re-added — but the caller invented its
+  // own store_id, which would orphan every observation it writes (viewdata drops rows whose
+  // store_id does not resolve, silently). Hand back the canonical id so the client can adopt it.
+  let canonicalStore = "";
   if (d.new_store && d.new_store.store_id && d.new_store.store) {
-    if (ctx.storeNames.indexOf(d.new_store.store) < 0) {
+    const at = ctx.storeNames.indexOf(d.new_store.store);
+    if (at < 0) {
       ss.getSheetByName("Stores")
         .appendRow([d.new_store.store_id, d.new_store.store, "", "", "created from app"]);
       ctx.storeNames.push(d.new_store.store);
+      ctx.storeIds.push(d.new_store.store_id);
+    } else {
+      canonicalStore = ctx.storeIds[at] || "";
+      if (canonicalStore && canonicalStore !== d.new_store.store_id) d.store_id = canonicalStore;
     }
   }
 
@@ -301,7 +357,7 @@ function writeOne(ss, d, ctx) {
       d.source || "scan", d.by || ""]);
     ctx.recentIds.push(id);
     ctx.cache.put("obs:" + id, "1", OBS_CACHE_SEC);
-    return { id: id, status: "written" };
+    return { id: id, status: "written", store_id: canonicalStore || undefined };
   }
 
   if (d.type === "tunsong") {

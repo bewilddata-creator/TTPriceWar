@@ -33,7 +33,7 @@ header{position:sticky; top:0; z-index:20; background:var(--paper);
 .store-chip span{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
 .store-chip.empty{background:var(--warn)}
 
-main{flex:1; padding:14px; display:flex; flex-direction:column; gap:12px; padding-bottom:80px}
+main{flex:1; padding:14px; display:flex; flex-direction:column; gap:12px; padding-bottom:118px}
 .card{background:var(--card); border:1px solid var(--line); border-radius:var(--r);
   box-shadow:var(--shadow); padding:14px}
 .eyebrow{font-size:11px; font-weight:700; letter-spacing:1px; color:var(--mut);
@@ -44,6 +44,18 @@ main{flex:1; padding:14px; display:flex; flex-direction:column; gap:12px; paddin
 .recent-stores{display:flex; flex-wrap:wrap; gap:8px; margin-top:12px}
 .recent-stores button{background:var(--paper); border:1px solid var(--line); border-radius:99px;
   padding:8px 14px; font-size:14px; font-weight:600}
+
+/* real dropdown — <datalist> is inconsistent on mobile and cannot be styled */
+.combo{position:relative}
+.combo-list{position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:40;
+  background:var(--card); border:1px solid var(--line); border-radius:12px;
+  box-shadow:var(--shadow); max-height:250px; overflow-y:auto}
+.combo-list button{display:block; width:100%; text-align:left; padding:12px 14px;
+  font-size:15px; font-weight:600; border-bottom:1px solid var(--line)}
+.combo-list button:last-child{border-bottom:none}
+.combo-list button:active{background:var(--paper)}
+.combo-list .meta{display:block; font-size:12px; font-weight:500; color:var(--mut); margin-top:2px}
+.combo-list .new{color:var(--tag-deep)}
 .big-btn{width:100%; padding:15px; border-radius:12px; font-size:17px; font-weight:700;
   background:var(--ink); color:#fff; margin-top:14px}
 .big-btn:disabled{opacity:.35}
@@ -56,10 +68,22 @@ main{flex:1; padding:14px; display:flex; flex-direction:column; gap:12px; paddin
 #toast.show{opacity:1; transform:translateX(-50%)}
 #toast.err{background:var(--warn)}
 
+/* status strip sits just above the tab bar */
+#statusBar{position:fixed; bottom:58px; left:50%; transform:translateX(-50%); width:100%;
+  max-width:480px; background:var(--card); border-top:1px solid var(--line);
+  padding:6px 14px; z-index:29; display:flex; align-items:center; gap:8px;
+  font-size:12px; color:var(--mut)}
+#statusBar b{color:var(--ink)}
+#statusBar.err{background:#FDF0ED; color:var(--warn)}
+
+/* two jobs, two tabs */
 footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:480px;
-  background:var(--card); border-top:1px solid var(--line); padding:9px 14px; z-index:30;
-  display:flex; align-items:center; gap:10px; font-size:12.5px; color:var(--mut)}
-footer b{color:var(--ink)}
+  background:var(--card); border-top:1px solid var(--line); z-index:30;
+  display:flex; padding-bottom:env(safe-area-inset-bottom)}
+.tab{flex:1; padding:9px 4px 10px; display:flex; flex-direction:column; align-items:center;
+  gap:3px; font-size:11.5px; font-weight:700; color:var(--mut); border-top:2.5px solid transparent}
+.tab .ic{font-size:19px; line-height:1}
+.tab.on{color:var(--ink); border-top-color:var(--tag)}
 .spin{width:14px; height:14px; border:2px solid var(--line); border-top-color:var(--tag);
   border-radius:99px; animation:sp 1s linear infinite; flex:none}
 @keyframes sp{to{transform:rotate(360deg)}}
@@ -78,8 +102,11 @@ footer b{color:var(--ink)}
 <main>
   <section id="storeScreen" class="card">
     <div class="eyebrow">ร้านที่กำลังสำรวจ · Store</div>
-    <input type="text" id="storeInput" class="tin" list="storeList" placeholder="พิมพ์ชื่อร้าน…" autocomplete="off">
-    <datalist id="storeList"></datalist>
+    <div class="combo">
+      <input type="text" id="storeInput" class="tin" placeholder="พิมพ์ชื่อร้าน…"
+             autocomplete="off" autocorrect="off" spellcheck="false">
+      <div class="combo-list hidden" id="storeDrop"></div>
+    </div>
     <div class="recent-stores" id="recentStores"></div>
     <button class="big-btn" id="storeGo" disabled>เริ่มเก็บราคา →</button>
   </section>
@@ -87,54 +114,73 @@ footer b{color:var(--ink)}
   <section id="captureScreen" class="hidden">
     <!-- viewfinder (Task 6), product card + price tag (Task 7), session list (Task 8) land here -->
   </section>
+
+  <section id="searchScreen" class="hidden">
+    <!-- scan-to-compare (M2) lands here -->
+    <div class="card"><div class="eyebrow">ค้นหาราคา</div>
+      <div style="color:var(--mut);font-size:14px">สแกนบาร์โค้ดเพื่อดูราคาของแต่ละร้าน — กำลังพัฒนา</div>
+    </div>
+  </section>
 </main>
 
-<footer>
-  <div class="spin" id="loadSpin"></div>
-  <div id="status">กำลังเตรียมข้อมูล…</div>
+<div id="statusBar">
+  <div class="spin hidden" id="loadSpin"></div>
+  <div id="status">พร้อมใช้งาน</div>
   <div style="margin-left:auto" id="sessionCount"></div>
+</div>
+
+<footer>
+  <button class="tab on" id="tabCapture"><span class="ic">▣</span>เก็บราคา</button>
+  <button class="tab" id="tabSearch"><span class="ic">⌕</span>ค้นหาราคา</button>
 </footer>
 
 <div id="toast"></div>
 
 <script type="module">
-import { decodeCatalog, findProduct, addLocalProduct, makeId } from "./core.js";
+import { makeId, normBarcode } from "./core.js";
 
 /* ================= CONFIG ================= */
 const API_URL = "https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q-A3R6Fp45V42sBslG1AhZfQ_S3RyQGOg1Zp5toMgQtyaGg/exec";
-const CATALOG_URL = "data/catalog.json";
-const DEVICE = "Ooa";   // who holds this phone; becomes entered_by
+const DEVICE = "Ooa";        // who holds this phone; becomes entered_by
+const NET_TIMEOUT = 12000;
 
 /* ================= STATE ================= */
 const S = { store:null, storeId:null, newStore:null, stores:[], recent:[],
-            code:null, isNew:false, photo:null, price:"", flag:"normal", count:0 };
-let PRODUCTS = new Map();
+            tab:"capture", code:null, price:"", flag:"normal", count:0 };
 
 const $ = id => document.getElementById(id);
+const esc = v => String(v).replace(/[&<>"\']/g, m =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "\'":"&#39;" }[m]));
 
-/* ---- tiny IndexedDB kv cache — same db as viewer.html ---- */
-function idb(mode, fn){ return new Promise(res=>{
-  const r = indexedDB.open('pricescout', 1);
-  r.onupgradeneeded = e => e.target.result.createObjectStore('kv');
-  r.onerror = () => res(null);
-  r.onsuccess = e => { try{
-    const tx = e.target.result.transaction('kv', mode);
-    const req = fn(tx.objectStore('kv'));
-    req.onsuccess = () => res(req.result ?? true);
-    req.onerror = () => res(null);
-  }catch(err){ res(null) } };
-});}
-const cacheGet = k => idb('readonly', st => st.get(k));
-const cacheSet = (k, v) => idb('readwrite', st => st.put(v, k));
-
+/* ---- localStorage, always guarded: a full quota must never break the app ---- */
 const ls = {
   get(k, d){ try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d } catch(e) { return d } },
   set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)) } catch(e) {} }
 };
 
-function setStatus(msg, spinning){
+/**
+ * Every network call goes through here. No request may hang the UI: a stalled fetch in a
+ * shop with one bar of signal is indistinguishable from a broken app, and the previous
+ * version had exactly that failure — an unresolved promise left the page on a loading
+ * message with no error and no way forward.
+ */
+async function api(path, opts = {}, timeout = NET_TIMEOUT) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeout);
+  try {
+    const res = await fetch(API_URL + path, { ...opts, signal: ctl.signal });
+    return await res.json();
+  } catch (e) {
+    return { ok: false, offline: true };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function setStatus(msg, spinning, isErr){
   $('status').textContent = msg;
-  $('loadSpin').style.display = spinning ? '' : 'none';
+  $('loadSpin').classList.toggle('hidden', !spinning);
+  $('statusBar').classList.toggle('err', !!isErr);
 }
 let toastT;
 function toast(msg, err){
@@ -142,54 +188,61 @@ function toast(msg, err){
   t.textContent = msg; t.classList.toggle('err', !!err); t.classList.add('show');
   clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2200);
 }
-const esc = s => String(s).replace(/[&<>"']/g, m =>
-  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[m]));
 
-/* ================= CATALOG ================= */
-async function loadCatalog(){
-  const cached = await cacheGet('catalog');
-  if (cached) { applyCatalog(cached, 'จากเครื่อง'); return cached; }
+/* ================= PRODUCT LOOKUP =================
+   The catalog is not downloaded. One barcode is resolved per scan, and the request runs
+   while the price is being typed, so its latency sits inside a gap the user was already
+   filling rather than in front of them. */
+const lookupCache = new Map();          // session-local; a rescan is instant
 
-  setStatus('กำลังโหลดฐานข้อมูลสินค้าครั้งแรก…', true);
-  try {
-    const json = await fetch(CATALOG_URL).then(r => r.json());
-    await cacheSet('catalog', json);
-    applyCatalog(json, 'โหลดครั้งแรกเสร็จ');
-    return json;
-  } catch (e) {
-    setStatus('โหลดฐานข้อมูลไม่สำเร็จ — ลองใหม่เมื่อมีสัญญาณ');
-    return null;
-  }
+async function lookupBarcode(code){
+  const key = normBarcode(code);
+  if (lookupCache.has(key)) return lookupCache.get(key);
+  const d = await api(`?action=lookup&barcode=${encodeURIComponent(code)}`);
+  if (!d.ok) return { pending: true };   // offline: unknown, not "new"
+  const out = d.found ? { found: true, p: d.p } : { found: false };
+  lookupCache.set(key, out);
+  return out;
 }
 
-function applyCatalog(json, note){
-  PRODUCTS = decodeCatalog(json);
-  S.stores = (json.s || []).map(r => ({ id:r[0], name:r[1] }));
-  $('storeList').innerHTML = S.stores.map(s => `<option value="${esc(s.name)}">`).join('');
-  setStatus(`พร้อมใช้งาน · ${json.n.toLocaleString()} สินค้า${note ? ' · ' + note : ''}`);
-}
+/* ================= STORES ================= */
+function renderStoreDrop(){
+  const q = $('storeInput').value.trim().toLowerCase();
+  const box = $('storeDrop');
+  const hits = S.stores.filter(s => !q || s.name.toLowerCase().includes(q)).slice(0, 8);
+  const exact = S.stores.some(s => s.name.toLowerCase() === q);
 
-/* ================= STORE ================= */
-function renderRecent(){
-  const box = $('recentStores');
   box.innerHTML = '';
-  S.recent.slice(0, 6).forEach(name => {
+  hits.forEach(s => {
     const b = document.createElement('button');
-    b.textContent = name;
-    b.addEventListener('click', () => { $('storeInput').value = name; setStore(); });
+    b.innerHTML = `${esc(s.name)}` +
+      (s.channel || s.region ? `<span class="meta">${esc([s.region, s.channel].filter(Boolean).join(' · '))}</span>` : '');
+    b.addEventListener('click', () => pickStore(s.name, s.id));
     box.appendChild(b);
   });
+  if (q && !exact) {
+    const b = document.createElement('button');
+    b.innerHTML = `<span class="new">+ เพิ่มร้านใหม่ “${esc($('storeInput').value.trim())}”</span>`;
+    b.addEventListener('click', createStore);
+    box.appendChild(b);
+  }
+  box.classList.toggle('hidden', box.childElementCount === 0);
 }
 
-function setStore(){
+function pickStore(name, id){
+  $('storeDrop').classList.add('hidden');
+  applyStore(name, id);
+}
+
+function createStore(){
   const name = $('storeInput').value.trim();
   if (!name) return;
-  const known = S.stores.find(s => s.name === name);
-  if (known) { applyStore(name, known.id); return; }
+  const known = S.stores.find(s => s.name.toLowerCase() === name.toLowerCase());
+  if (known) { pickStore(known.name, known.id); return; }
   const id = makeId('S');
-  S.stores.push({ id, name });
+  S.stores.push({ id, name, region:'', channel:'' });
   S.newStore = { store_id: id, store: name };   // travels with the next observation
-  applyStore(name, id);
+  pickStore(name, id);
 }
 
 function applyStore(name, id){
@@ -200,30 +253,80 @@ function applyStore(name, id){
   renderRecent();
   $('storeChipName').textContent = name;
   $('storeChip').classList.remove('empty');
-  $('storeScreen').classList.add('hidden');
-  $('captureScreen').classList.remove('hidden');
+  showTab(S.tab);
+}
+
+function renderRecent(){
+  const box = $('recentStores');
+  box.innerHTML = '';
+  S.recent.slice(0, 6).forEach(name => {
+    const b = document.createElement('button');
+    b.textContent = name;
+    b.addEventListener('click', () => {
+      const hit = S.stores.find(s => s.name === name);
+      hit ? pickStore(hit.name, hit.id) : ($('storeInput').value = name, createStore());
+    });
+    box.appendChild(b);
+  });
+}
+
+/** Refresh the store list in the background. Cached copy renders first; failure is silent. */
+async function refreshStores(){
+  const cached = ls.get('ps_stores', null);
+  if (cached) { S.stores = cached; renderStoreDrop(); }
+  const d = await api('?action=stores');
+  if (!d.ok || !Array.isArray(d.s)) return;
+  S.stores = d.s.map(r => ({ id:r[0], name:r[1], region:r[2], channel:r[3] }));
+  ls.set('ps_stores', S.stores);
+  if (!$('storeDrop').classList.contains('hidden')) renderStoreDrop();
+}
+
+/* ================= TABS ================= */
+function showTab(which){
+  S.tab = which;
+  const needsStore = !S.storeId && which === 'capture';
+  $('storeScreen').classList.toggle('hidden', !needsStore);
+  $('captureScreen').classList.toggle('hidden', needsStore || which !== 'capture');
+  $('searchScreen').classList.toggle('hidden', which !== 'search');
+  $('tabCapture').classList.toggle('on', which === 'capture');
+  $('tabSearch').classList.toggle('on', which === 'search');
 }
 
 function showStorePicker(){
   $('storeScreen').classList.remove('hidden');
   $('captureScreen').classList.add('hidden');
-  $('storeInput').value = S.store || '';
-  $('storeGo').disabled = !S.store;
+  $('searchScreen').classList.add('hidden');
+  $('storeInput').value = '';
+  renderStoreDrop();
+  $('storeInput').focus();
 }
 
 /* ================= WIRING ================= */
-$('storeInput').addEventListener('input', e => { $('storeGo').disabled = !e.target.value.trim(); });
-$('storeInput').addEventListener('keydown', e => { if (e.key === 'Enter') setStore(); });
-$('storeGo').addEventListener('click', setStore);
+$('storeInput').addEventListener('input', renderStoreDrop);
+$('storeInput').addEventListener('focus', renderStoreDrop);
+$('storeInput').addEventListener('keydown', e => { if (e.key === 'Enter') createStore(); });
+$('storeGo').addEventListener('click', createStore);
 $('storeChip').addEventListener('click', showStorePicker);
+$('tabCapture').addEventListener('click', () => showTab('capture'));
+$('tabSearch').addEventListener('click', () => showTab('search'));
+document.addEventListener('click', e => {
+  if (!e.target.closest('.combo')) $('storeDrop').classList.add('hidden');
+});
 
-/* ================= INIT ================= */
-async function init(){
+/* ================= INIT =================
+   Nothing here is awaited before the app is usable. The page is interactive immediately;
+   the store list arrives when the network allows, or not at all. */
+function init(){
   S.recent = ls.get('ps_recent', []);
+  S.stores = ls.get('ps_stores', []);
   renderRecent();
-  await loadCatalog();
+
   const saved = ls.get('ps_store', null);
   if (saved && saved.name && saved.id) applyStore(saved.name, saved.id);
+  else showTab('capture');
+
+  setStatus('พร้อมใช้งาน');
+  refreshStores();
 }
 init();
 </script>
