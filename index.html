@@ -43,7 +43,6 @@ main{flex:1; padding:12px; display:flex; flex-direction:column; gap:10px; paddin
 #fold .card{padding:10px 12px}
 #fold .pad{flex:1; align-content:stretch}
 #fold .pad button{padding:0; min-height:44px}
-#belowFold{display:flex; flex-direction:column; gap:10px}
 
 /* The viewfinder is large while hunting for a barcode and shrinks to a strip once an item
    is up, so the keypad and save button stay above the fold while the price is typed.
@@ -283,13 +282,6 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
 
    </div><!-- /fold -->
 
-   <div id="belowFold">
-    <div class="card hidden" id="pricesCard">
-      <div class="eyebrow">ราคาที่ร้านอื่น · Other stores</div>
-      <div class="prices" id="hitPrices"></div>
-    </div>
-   </div>
-
   </section>
 
   <section id="searchScreen" class="hidden">
@@ -350,7 +342,7 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
 <div id="toast"></div>
 
 <script type="module">
-import { makeId, normBarcode, priceKey, priceValue, buildObs, shouldAcceptScan,
+import { makeId, normBarcode, priceKey, priceValue, buildObs, shouldAcceptScan, rankStores,
          outboxAdd, outboxUndo, outboxDue, outboxMark, outboxRemove,
          outboxPending, UNDO_MS } from "./core.js";
 
@@ -428,12 +420,19 @@ async function pricesFor(code){
 
 /* ================= STORES ================= */
 function renderStoreDrop(){
-  const q = $('storeInput').value.trim().toLowerCase();
+  const raw = $('storeInput').value.trim();
+  const q = raw.toLowerCase();
   const box = $('storeDrop');
-  const hits = S.stores.filter(s => !q || s.name.toLowerCase().includes(q)).slice(0, 8);
-  const exact = S.stores.some(s => s.name.toLowerCase() === q);
+  const hits = rankStores(S.stores, raw, 8);
+  const exact = S.stores.some(s => s.name.trim().toLowerCase() === q);
 
   box.innerHTML = '';
+  if (!S.stores.length) {
+    const d = document.createElement('div');
+    d.style.cssText = 'padding:12px 14px;font-size:13.5px;color:var(--mut)';
+    d.textContent = storesLoading ? 'กำลังโหลดรายชื่อร้าน…' : 'ยังไม่มีรายชื่อร้าน — พิมพ์ชื่อเพื่อเพิ่มใหม่';
+    box.appendChild(d);
+  }
   hits.forEach(s => {
     const b = document.createElement('button');
     b.innerHTML = `${esc(s.name)}` +
@@ -458,7 +457,8 @@ function pickStore(name, id){
 function createStore(){
   const name = $('storeInput').value.trim();
   if (!name) return;
-  const known = S.stores.find(s => s.name.toLowerCase() === name.toLowerCase());
+  const known = S.stores.find(s =>
+    s.name.trim().toLowerCase().replace(/\s+/g, ' ') === name.toLowerCase().replace(/\s+/g, ' '));
   if (known) { pickStore(known.name, known.id); return; }
   const id = makeId('S');
   S.stores.push({ id, name, region:'', channel:'' });
@@ -492,14 +492,18 @@ function renderRecent(){
 }
 
 /** Refresh the store list in the background. Cached copy renders first; failure is silent. */
+let storesLoading = false;
 async function refreshStores(){
   const cached = ls.get('ps_stores', null);
-  if (cached) { S.stores = cached; renderStoreDrop(); }
+  if (cached && cached.length) S.stores = cached;
+  storesLoading = true;
+  if (!$('storeDrop').classList.contains('hidden')) renderStoreDrop();
   const d = await api('?action=stores');
-  if (!d.ok || !Array.isArray(d.s)) return;
+  storesLoading = false;
+  if (!d.ok || !Array.isArray(d.s)) { renderStoreDrop(); return; }
   S.stores = d.s.map(r => ({ id:r[0], name:r[1], region:r[2], channel:r[3] }));
   ls.set('ps_stores', S.stores);
-  if (!$('storeDrop').classList.contains('hidden')) renderStoreDrop();
+  renderStoreDrop();
 }
 
 /* ================= CAPTURE ================= */
@@ -524,18 +528,10 @@ async function onScan(raw){
   $('hitItem').textContent = 'กำลังค้นหา…';
   $('hitSku').textContent = ''; $('hitSize').textContent = '';
   $('hitImg').style.visibility = 'hidden';
-  $('pricesCard').classList.add('hidden');
   $('codeInput').blur();
 
-  // Identity and prices are fetched CONCURRENTLY. The name lands as soon as it resolves;
-  // the price list fills in when its own (slower) scan returns.
-  const wanted = code;
-  pricesFor(code).then(list => {
-    if (S.code === wanted || normBarcode(S.code || '') === normBarcode(wanted)) {
-      if (list) renderPrices(list);
-    }
-  });
-
+  // Capture asks ONLY for identity. Other shops' prices belong on ค้นหาราคา — fetching them
+  // here would scan a second sheet on every save and slow the loop that has to be fastest.
   const res = await lookupBarcode(code);
   if (S.code !== code) return;                    // a newer scan overtook this one
 
@@ -559,18 +555,6 @@ function showHit(res){
   if (img) { el.src = img; el.style.visibility = 'visible'; } else { el.style.visibility = 'hidden'; }
 }
 
-function renderPrices(list){
-  const box = $('hitPrices');
-  $('pricesCard').classList.remove('hidden');
-  if (!list.length){ box.innerHTML = '<div class="none">ยังไม่มีราคาจากร้านอื่น</div>'; return; }
-  box.innerHTML = list.map(r => `
-    <div class="row ${esc(r.flag)}">
-      <span class="st">${esc(r.store)}</span>
-      <span class="dt">${esc(r.date)}${r.flag !== 'normal' ? ' · ' + esc(FLAG_TH[r.flag] || r.flag) : ''}</span>
-      <span class="pr">${esc(fmtPrice(r.price))}</span>
-    </div>`).join('');
-}
-
 function showMiss(code){
   S.product = null; S.isNew = true;
   $('hitCard').classList.add('hidden');
@@ -589,7 +573,6 @@ function showUnresolved(code){
   $('hitItem').textContent = code;
   $('hitSku').textContent = 'ไม่มีสัญญาณ — บันทึกราคาได้ ระบบจะจับคู่สินค้าให้ภายหลัง';
   $('hitSize').textContent = '';
-  $('pricesCard').classList.add('hidden');
 }
 
 /* ---- price ---- */
@@ -612,7 +595,7 @@ function resetItem(clearCode = true){
   S.price = ''; renderPrice(); setFlag('normal');
   if (clearCode) $('codeInput').value = '';
   $('captureScreen').classList.remove('has-item');
-  ['hitCard','missCard','priceCard','pricesCard'].forEach(id => $(id).classList.add('hidden'));
+  ['hitCard','missCard','priceCard'].forEach(id => $(id).classList.add('hidden'));
   $('photoThumb').classList.add('hidden');
   $('newItem').value = '';
 }
@@ -882,6 +865,9 @@ function showTab(which){
   $('searchScreen').classList.toggle('hidden', which !== 'search');
   $('tabCapture').classList.toggle('on', which === 'capture');
   $('tabSearch').classList.toggle('on', which === 'search');
+  // ค้นหาราคา is not scoped to a store — it reports every shop. Showing the capture store
+  // in the header there would imply otherwise.
+  $('storeChip').classList.toggle('hidden', which === 'search');
 }
 
 function showStorePicker(){

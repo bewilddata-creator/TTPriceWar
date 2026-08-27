@@ -87,3 +87,32 @@ export function outboxRemove(outbox, obsId) {
 export function outboxPending(outbox) {
   return outbox.length;
 }
+
+/**
+ * How well `text` matches `query`. Tiers, best first: exact, prefix, substring, then
+ * subsequence (the query's characters appear in order, so "evb" finds "EVEANDBOY").
+ * 0 means no match. A fresh browser has no history to fall back on, so the picker has to
+ * find a store from a partial or slightly wrong guess.
+ */
+export function fuzzyScore(text, query) {
+  const t = String(text == null ? "" : text).toLowerCase().trim();
+  const q = String(query == null ? "" : query).toLowerCase().trim();
+  if (!q) return 0.5;
+  if (!t) return 0;
+  if (t === q) return 3;
+  if (t.startsWith(q)) return 2.2;
+  if (t.includes(q)) return 1.6;
+  let i = 0;
+  for (let k = 0; k < t.length && i < q.length; k++) if (t[k] === q[i]) i++;
+  return i === q.length ? 1.2 : 0;
+}
+
+/** Stores that match `query`, best first. An empty query returns everything. */
+export function rankStores(stores, query, limit = 8) {
+  return stores
+    .map(s => ({ s, score: fuzzyScore(s.name, query) }))
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score || String(a.s.name).localeCompare(String(b.s.name)))
+    .slice(0, limit)
+    .map(x => x.s);
+}
