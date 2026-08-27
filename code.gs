@@ -1,6 +1,16 @@
 /**
- * PRICE SCOUT — backend v8
- * = v7 + admin endpoints: vocab, needsinfo, psearch, and in-place edits to Products/Stores.
+ * PRICE SCOUT — backend v9
+ * = v8 + a standalone store-creation endpoint for the admin page.
+ *
+ * WHY v9: until now a store could only come into being as a side effect of an observation
+ * POST carrying `new_store` — the admin page had no way to add one directly. POST
+ * {type:"createStore", store_id, store, region, channel, notes} fills that gap. It reuses
+ * storeKey() rather than comparing raw names, so "eveandboy" and "EVEANDBOY" resolve to the
+ * same row instead of creating a duplicate — that exact bug has already happened once in
+ * production data — and it hands back the EXISTING row's store_id when the shop is already
+ * known, because inventing a second id for the same shop orphans observations (`viewdata`
+ * drops rows whose store_id does not resolve, silently). A `store_id` the caller omits is
+ * generated server-side in the project's existing "S-XXXXXX" format.
  *
  * WHY v8: the admin screen needs to browse and fix the product master without ever touching
  * row order or column position. Four additions:
@@ -62,6 +72,16 @@ function normBarcode(v) {
   return String(v == null ? "" : v).replace(/\D/g, "").replace(/^0+/, "") || "0";
 }
 
+// I, L, O, 0, 1 excluded — easy to confuse with each other when copied onto a shelf label.
+const STORE_ID_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+
+/** New Stores id in the project's existing "S-XXXXXX" format. */
+function genStoreId() {
+  let s = "";
+  for (let i = 0; i < 6; i++) s += STORE_ID_CHARS.charAt(Math.floor(Math.random() * STORE_ID_CHARS.length));
+  return "S-" + s;
+}
+
 /**
  * One-time setup. Run manually from the Apps Script editor, once, before deploying v5.
  * Safe to run again — rows that already carry a seq keep it.
@@ -119,7 +139,7 @@ function doGet(e) {
   if (action === "vocab") return vocab();
   if (action === "needsinfo") return needsInfo(e.parameter.limit);
   if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
-  return json({ ok: true, msg: "Price Scout API v8" });
+  return json({ ok: true, msg: "Price Scout API v9" });
 }
 
 /* ---- capture page: products (light) + stores ---- */
@@ -584,6 +604,7 @@ function writeOne(ss, d, ctx) {
 
   if (d.type === "updateProduct") return updateProduct(ss, d);
   if (d.type === "updateStore") return updateStore(ss, d);
+  if (d.type === "createStore") return createStore(ss, d, ctx);
   if (d.type === "uploadImage") return uploadImage(ss, d);
 
   return { id: d.obs_id || d.ts_id || "", status: "unknown_type" };
@@ -656,6 +677,41 @@ function updateStore(ss, d) {
     range.setValues([cur]);
   }
   return { id: d.store_id, status: "updated" };
+}
+
+/**
+ * Creates a Stores row directly, for the admin page's "add store" flow. Until v9 a store could
+ * only appear as a side effect of an observation POST carrying `new_store`.
+ *
+ * Compares on storeKey(), not the raw name — "eveandboy" and "EVEANDBOY" must resolve to the
+ * same row, and this exact bug has already happened once in production data. When the shop
+ * already exists, the caller gets back the EXISTING row's store_id rather than the one it
+ * asked for: inventing a second id for the same shop orphans observations, and `viewdata`
+ * drops rows whose store_id does not resolve, silently. ctx.storeKeys/storeIds were already
+ * read once in newWriteContext and are updated here too, so a batch with several createStore
+ * items stays consistent within one request without re-reading the sheet.
+ */
+function createStore(ss, d, ctx) {
+  const name = String(d.store || "").trim();
+  if (!name) return { id: "", status: "invalid" };
+
+  const key = storeKey(name);
+  const at = ctx.storeKeys.indexOf(key);
+  if (at >= 0) return { id: ctx.storeIds[at] || "", status: "exists" };
+
+  // A caller-supplied id that already belongs to a DIFFERENT shop is refused, not written:
+  // two Stores rows sharing one store_id makes viewdata's id->store map keep only one of
+  // them, so the other shop's observations vanish from analysis with no error anywhere.
+  let id = String(d.store_id || "").trim();
+  if (!id || ctx.storeIds.indexOf(id) >= 0) {
+    do { id = genStoreId(); } while (ctx.storeIds.indexOf(id) >= 0);
+  }
+
+  ss.getSheetByName("Stores").appendRow([id, name, d.region || "", d.channel || "",
+    d.notes || "created from admin"]);
+  ctx.storeKeys.push(key);
+  ctx.storeIds.push(id);
+  return { id: id, status: "created" };
 }
 
 /** Saves a captured photo to Drive and points the product's image_url at it. */
