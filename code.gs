@@ -1,6 +1,6 @@
 /**
- * PRICE SCOUT — backend v6
- * = v5 + per-scan barcode lookup (product + other shops' prices) and a stores endpoint.
+ * PRICE SCOUT — backend v7
+ * = v5 + per-scan barcode lookup, a parallel prices endpoint, and a stores endpoint.
  *
  * WHY v6: the capture page no longer downloads the product master. It resolves one barcode
  * at a time while the user is typing the price, so the round trip is hidden rather than
@@ -37,6 +37,12 @@ const FLAGS = ["normal", "promo", "short_shelf_life"];
 const SEQ_COL = 15;              // Products column O — monotonic append counter
 const RECENT_OBS_WINDOW = 300;   // fallback only; the cache is the real retry guard
 const OBS_CACHE_SEC = 21600;     // 6h — far longer than any realistic retry
+
+/** Store names are matched case- and whitespace-insensitively: typing "eveandboy" must
+ *  never create a second row beside "EVEANDBOY". */
+function storeKey(name) {
+  return String(name == null ? "" : name).trim().toLowerCase().replace(/\s+/g, " ");
+}
 
 /** Match the client's normalisation: digits only, no leading zeros. */
 function normBarcode(v) {
@@ -95,8 +101,9 @@ function doGet(e) {
   if (action === "viewdata") return viewdata();
   if (action === "delta") return delta(e.parameter.after_seq);
   if (action === "lookup") return lookup(e.parameter.barcode);
+  if (action === "prices") return pricesEndpoint(e.parameter.barcode);
   if (action === "stores") return stores();
-  return json({ ok: true, msg: "Price Scout API v6" });
+  return json({ ok: true, msg: "Price Scout API v7" });
 }
 
 /* ---- capture page: products (light) + stores ---- */
@@ -176,24 +183,52 @@ function findRow(sheet, col, forms) {
   return -1;
 }
 
+/**
+ * Product identity only. Prices live at ?action=prices so the two run in PARALLEL from the
+ * client: the name appears as soon as identity resolves instead of waiting on a scan of
+ * 45,165 observation rows. Results are cached — the product master barely changes.
+ */
 function lookup(barcode) {
   if (!barcode) return json({ ok: true, found: false });
+  const cache = CacheService.getScriptCache();
+  const ck = "lk:" + normBarcode(barcode);
+  const hit = cache.get(ck);
+  if (hit) return ContentService.createTextOutput(hit).setMimeType(ContentService.MimeType.JSON);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const ps = ss.getSheetByName("Products");
   const forms = barcodeForms(barcode);
 
   const row = findRow(ps, 1, forms);
-  if (row < 0) return json({ ok: true, found: false, barcode: String(barcode) });
+  if (row < 0) {
+    const miss = JSON.stringify({ ok: true, found: false, barcode: String(barcode) });
+    cache.put(ck, miss, 300);        // brief: an unknown barcode may be created moments later
+    return ContentService.createTextOutput(miss).setMimeType(ContentService.MimeType.JSON);
+  }
 
   const r = ps.getRange(row, 1, 1, 12).getValues()[0];
   const canonical = String(r[0]);
 
-  return json({ ok: true, found: true, cdn: CDN_PREFIX, p: {
+  const payload = JSON.stringify({ ok: true, found: true, cdn: CDN_PREFIX, p: {
     barcode: canonical, brand: r[1] || "", item: r[2] || "", sku: r[3] || "",
     size: r[4] || "", unit: r[5] || "",
     img: String(r[9] || "").replace(CDN_PREFIX, "~"),
     needs_info: r[11] === "YES"
-  }, prices: pricesFor(ss, barcodeForms(canonical).concat(forms)) });
+  }});
+  cache.put(ck, payload, 21600);
+  return ContentService.createTextOutput(payload).setMimeType(ContentService.MimeType.JSON);
+}
+
+/** Prices for one barcode, fetched alongside the identity lookup rather than inside it. */
+function pricesEndpoint(barcode) {
+  if (!barcode) return json({ ok: true, prices: [] });
+  const cache = CacheService.getScriptCache();
+  const ck = "pr:" + normBarcode(barcode);
+  const hit = cache.get(ck);
+  if (hit) return ContentService.createTextOutput(hit).setMimeType(ContentService.MimeType.JSON);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const payload = JSON.stringify({ ok: true, prices: pricesFor(ss, barcodeForms(barcode)) });
+  cache.put(ck, payload, 600);       // short: a price captured now should show up soon
+  return ContentService.createTextOutput(payload).setMimeType(ContentService.MimeType.JSON);
 }
 
 /** Latest price per store per flag for this barcode, newest first. */
@@ -203,9 +238,10 @@ function pricesFor(ss, forms) {
   if (last < 2) return [];
   const col = os.getRange(2, 4, last - 1, 1);
 
+  const uniq = forms.filter(function (v, i, a) { return v && a.indexOf(v) === i; });
   const rows = {};
-  for (let i = 0; i < forms.length; i++) {
-    const found = col.createTextFinder(forms[i]).matchEntireCell(true).findAll();
+  for (let i = 0; i < uniq.length; i++) {
+    const found = col.createTextFinder(uniq[i]).matchEntireCell(true).findAll();
     for (let k = 0; k < found.length; k++) rows[found[k].getRow()] = true;
   }
   const rowNums = Object.keys(rows).map(Number).sort(function (a, b) { return b - a; });
@@ -365,11 +401,11 @@ function newWriteContext(ss) {
   const sh = ss.getSheetByName("Stores");
   const srows = sh.getLastRow() > 1
     ? sh.getRange(2, 1, sh.getLastRow() - 1, 2).getValues() : [];
-  const storeIds   = srows.map(function (r) { return String(r[0]); });
-  const storeNames = srows.map(function (r) { return String(r[1]); });
+  const storeIds  = srows.map(function (r) { return String(r[0]); });
+  const storeKeys = srows.map(function (r) { return storeKey(r[1]); });
 
   return { cache: cache, recentIds: recentIds, codes: codes, storeIds: storeIds,
-           storeNames: storeNames, nextSeq: maxSeq(ps) + 1 };
+           storeKeys: storeKeys, nextSeq: maxSeq(ps) + 1 };
 }
 
 /** True when this obs_id has already been written. Cache first, row scan as a fallback. */
@@ -386,11 +422,11 @@ function writeOne(ss, d, ctx) {
   // store_id does not resolve, silently). Hand back the canonical id so the client can adopt it.
   let canonicalStore = "";
   if (d.new_store && d.new_store.store_id && d.new_store.store) {
-    const at = ctx.storeNames.indexOf(d.new_store.store);
+    const at = ctx.storeKeys.indexOf(storeKey(d.new_store.store));
     if (at < 0) {
       ss.getSheetByName("Stores")
         .appendRow([d.new_store.store_id, d.new_store.store, "", "", "created from app"]);
-      ctx.storeNames.push(d.new_store.store);
+      ctx.storeKeys.push(storeKey(d.new_store.store));
       ctx.storeIds.push(d.new_store.store_id);
     } else {
       canonicalStore = ctx.storeIds[at] || "";

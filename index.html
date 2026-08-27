@@ -48,11 +48,12 @@ main{flex:1; padding:12px; display:flex; flex-direction:column; gap:10px; paddin
 /* The viewfinder is large while hunting for a barcode and shrinks to a strip once an item
    is up, so the keypad and save button stay above the fold while the price is typed.
    A phone cannot show a full viewfinder AND a full keypad at once; this is the trade. */
-#reader{border-radius:12px; overflow:hidden; background:#000; margin-top:8px;
+#reader, #qReader{border-radius:12px; overflow:hidden; background:#000; margin-top:8px;
   height:190px; transition:height .18s ease}
 #captureScreen.has-item #reader{height:84px}
-#reader video{width:100%!important; height:100%!important; object-fit:cover}
-#reader img[alt="Info icon"], #reader__dashboard{display:none!important}
+#reader video, #qReader video{width:100%!important; height:100%!important; object-fit:cover}
+#reader img[alt="Info icon"], #reader__dashboard,
+#qReader img[alt="Info icon"], #qReader__dashboard{display:none!important}
 .scan-btn.on{background:var(--warn)}
 .torch{position:absolute; top:8px; right:8px; z-index:5; background:rgba(23,25,28,.72);
   color:#fff; border-radius:99px; width:38px; height:38px; font-size:17px; display:grid;
@@ -152,6 +153,15 @@ main{flex:1; padding:12px; display:flex; flex-direction:column; gap:10px; paddin
   border:1px solid var(--line); border-radius:12px; font-family:'IBM Plex Mono',monospace}
 .pad button:active{background:var(--line)}
 .pad .fn{font-size:19px; color:var(--mut)}
+
+.statgrid{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; text-align:center}
+.statgrid .lab{display:block; font-size:11px; font-weight:700; letter-spacing:.6px;
+  color:var(--mut); text-transform:uppercase}
+.statgrid .val{display:block; font-family:'IBM Plex Mono',monospace; font-weight:700;
+  font-size:20px; margin-top:3px}
+#qReader{height:190px}
+.bar{height:5px; border-radius:99px; background:var(--line); margin-top:5px; overflow:hidden}
+.bar span{display:block; height:100%; background:var(--tag); border-radius:99px}
 
 .linkbtn{background:none; color:var(--mut); font-size:12.5px; font-weight:600;
   text-decoration:underline; padding:2px 0}
@@ -283,10 +293,46 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
   </section>
 
   <section id="searchScreen" class="hidden">
-    <!-- scan-to-compare (M2) lands here -->
-    <div class="card"><div class="eyebrow">ค้นหาราคา</div>
-      <div style="color:var(--mut);font-size:14px">สแกนบาร์โค้ดเพื่อดูราคาของแต่ละร้าน — กำลังพัฒนา</div>
+
+    <div class="card">
+      <div class="eyebrow">สแกนหรือพิมพ์บาร์โค้ด</div>
+      <div class="code-row">
+        <input type="text" id="qCode" inputmode="numeric" enterkeyhint="search"
+               placeholder="สแกน หรือพิมพ์เลข…" autocomplete="off">
+        <button class="scan-btn" id="qCamBtn" title="เปิดกล้อง">▣</button>
+      </div>
+      <div class="readerwrap hidden" id="qReaderWrap">
+        <div id="qReader"></div>
+      </div>
     </div>
+
+    <div class="card hit hidden" id="qHit">
+      <img id="qImg" alt="" onerror="this.style.visibility='hidden'">
+      <div style="min-width:0;flex:1">
+        <div class="brand" id="qBrand"></div>
+        <div class="name" id="qItem"></div>
+        <div class="sku" id="qSku"></div>
+        <div class="size" id="qSize"></div>
+      </div>
+    </div>
+
+    <div class="card hidden" id="qStats">
+      <div class="statgrid">
+        <div><span class="lab">ต่ำสุด</span><span class="val" id="qMin">—</span></div>
+        <div><span class="lab">กลาง</span><span class="val" id="qMed">—</span></div>
+        <div><span class="lab">สูงสุด</span><span class="val" id="qMax">—</span></div>
+      </div>
+    </div>
+
+    <div class="card hidden" id="qPricesCard">
+      <div class="eyebrow">ราคาแต่ละร้าน · By store</div>
+      <div class="prices" id="qPrices"></div>
+    </div>
+
+    <div class="card hidden" id="qEmpty">
+      <div style="color:var(--mut);font-size:14px" id="qEmptyMsg"></div>
+    </div>
+
   </section>
 </main>
 
@@ -370,9 +416,14 @@ async function lookupBarcode(code){
   if (lookupCache.has(key)) return lookupCache.get(key);
   const d = await api(`?action=lookup&barcode=${encodeURIComponent(code)}`);
   if (!d.ok) return { pending: true };   // offline: unknown, not "new"
-  const out = d.found ? { found: true, p: d.p } : { found: false };
-  lookupCache.set(key, out);
-  return out;
+  lookupCache.set(key, d);               // keep the WHOLE payload — cdn included
+  return d;
+}
+
+/** Prices are a separate request so identity is not held up behind a 45k-row scan. */
+async function pricesFor(code){
+  const d = await api(`?action=prices&barcode=${encodeURIComponent(code)}`, {}, 25000);
+  return (d.ok && Array.isArray(d.prices)) ? d.prices : null;
 }
 
 /* ================= STORES ================= */
@@ -476,6 +527,15 @@ async function onScan(raw){
   $('pricesCard').classList.add('hidden');
   $('codeInput').blur();
 
+  // Identity and prices are fetched CONCURRENTLY. The name lands as soon as it resolves;
+  // the price list fills in when its own (slower) scan returns.
+  const wanted = code;
+  pricesFor(code).then(list => {
+    if (S.code === wanted || normBarcode(S.code || '') === normBarcode(wanted)) {
+      if (list) renderPrices(list);
+    }
+  });
+
   const res = await lookupBarcode(code);
   if (S.code !== code) return;                    // a newer scan overtook this one
 
@@ -497,7 +557,6 @@ function showHit(res){
   const img = p.img ? p.img.replace('~', res.cdn || '') : '';
   const el = $('hitImg');
   if (img) { el.src = img; el.style.visibility = 'visible'; } else { el.style.visibility = 'hidden'; }
-  renderPrices(res.prices || []);
 }
 
 function renderPrices(list){
@@ -702,9 +761,121 @@ window.addEventListener('online', () => flushOutbox(true));
 // Flushing when the page hides stops a held row being lost if the app is closed mid-window.
 document.addEventListener('visibilitychange', () => { if (document.hidden) flushOutbox(true); });
 
+/* ================= SEARCH (ค้นหาราคา) =================
+   Same scanner, same de-duplication, different job: no keypad, no save. Point at a product
+   and see what every shop charges. */
+let qCam = null, qCamOn = false, qLast = null, qCode = null;
+
+async function qStartCam(){
+  if (qCamOn) return;
+  if (typeof Html5Qrcode === 'undefined'){ toast('โหลดตัวสแกนไม่สำเร็จ — พิมพ์เลขแทน', true); return; }
+  $('qReaderWrap').classList.remove('hidden');
+  qCam = new Html5Qrcode('qReader', { verbose:false });
+  try {
+    await qCam.start({ facingMode:'environment' },
+                     { fps:10, qrbox:{ width:250, height:120 } },
+                     txt => {
+                       const code = String(txt || '').trim();
+                       if (!code) return;
+                       const now = Date.now();
+                       if (!shouldAcceptScan(qLast, code, now)) return;
+                       qLast = { code, at: now };
+                       if (navigator.vibrate) navigator.vibrate(35);
+                       qLookup(code);
+                     }, () => {});
+    qCamOn = true; $('qCamBtn').classList.add('on');
+  } catch (e) {
+    $('qReaderWrap').classList.add('hidden'); qCam = null;
+    toast('เปิดกล้องไม่ได้ — พิมพ์เลขแทน', true);
+  }
+}
+
+async function qStopCam(){
+  if (qCam && qCamOn) { try { await qCam.stop() } catch(e) {} }
+  try { if (qCam) qCam.clear() } catch(e) {}
+  qCam = null; qCamOn = false;
+  $('qReaderWrap').classList.add('hidden');
+  $('qCamBtn').classList.remove('on');
+}
+
+const median = a => {
+  const v = [...a].sort((x, y) => x - y), m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+};
+
+async function qLookup(code){
+  code = String(code || '').trim();
+  if (!code) return;
+  qCode = code;
+  $('qCode').value = code;
+  $('qCode').blur();
+
+  $('qHit').classList.remove('hidden');
+  $('qBrand').textContent = ''; $('qItem').textContent = 'กำลังค้นหา…';
+  $('qSku').textContent = ''; $('qSize').textContent = '';
+  $('qImg').style.visibility = 'hidden';
+  ['qStats','qPricesCard','qEmpty'].forEach(id => $(id).classList.add('hidden'));
+
+  const [res, list] = await Promise.all([lookupBarcode(code), pricesFor(code)]);
+  if (qCode !== code) return;
+
+  if (res.pending) {
+    $('qItem').textContent = code;
+    $('qSku').textContent = 'ไม่มีสัญญาณ — ลองใหม่เมื่อเชื่อมต่อได้';
+    return;
+  }
+  if (!res.found) {
+    $('qHit').classList.add('hidden');
+    $('qEmpty').classList.remove('hidden');
+    $('qEmptyMsg').textContent = `ไม่พบสินค้าบาร์โค้ด ${code} ในระบบ`;
+    return;
+  }
+
+  const p = res.p;
+  $('qBrand').textContent = p.brand || '';
+  $('qItem').textContent = p.item || p.barcode;
+  $('qSku').textContent = p.sku || '';
+  $('qSize').textContent = [p.size, p.unit].filter(Boolean).join(' ');
+  const img = p.img ? p.img.replace('~', res.cdn || '') : '';
+  const el = $('qImg');
+  if (img) { el.src = img; el.style.visibility = 'visible'; } else { el.style.visibility = 'hidden'; }
+
+  const prices = list || [];
+  if (!prices.length) {
+    $('qEmpty').classList.remove('hidden');
+    $('qEmptyMsg').textContent = 'ยังไม่มีใครเก็บราคาสินค้านี้';
+    return;
+  }
+
+  // Stats use ปกติ prices only — a promo price is not the shelf price.
+  const normal = prices.filter(r => r.flag === 'normal').map(r => r.price);
+  if (normal.length) {
+    $('qStats').classList.remove('hidden');
+    $('qMin').textContent = fmtPrice(Math.min(...normal));
+    $('qMed').textContent = fmtPrice(median(normal));
+    $('qMax').textContent = fmtPrice(Math.max(...normal));
+  }
+
+  const lo = Math.min(...prices.map(r => r.price));
+  const hi = Math.max(...prices.map(r => r.price));
+  $('qPricesCard').classList.remove('hidden');
+  $('qPrices').innerHTML = prices.map(r => {
+    const pct = hi > lo ? Math.round(((r.price - lo) / (hi - lo)) * 100) : 100;
+    return `<div class="row ${esc(r.flag)}">
+        <span class="st">${esc(r.store)}${r.channel ? ' · ' + esc(r.channel) : ''}</span>
+        <span class="dt">${esc(r.date)}${r.flag !== 'normal' ? ' · ' + esc(FLAG_TH[r.flag] || r.flag) : ''}</span>
+        <span class="pr">${esc(fmtPrice(r.price))}</span>
+      </div>
+      <div class="bar"><span style="width:${Math.max(pct, 4)}%"></span></div>`;
+  }).join('');
+}
+
 /* ================= TABS ================= */
 function showTab(which){
   S.tab = which;
+  // Two viewfinders cannot share one camera — release the other tab's before switching.
+  if (which === 'search' && camOn) stopCam(false);
+  if (which === 'capture' && qCamOn) qStopCam();
   const needsStore = !S.storeId && which === 'capture';
   $('storeScreen').classList.toggle('hidden', !needsStore);
   $('captureScreen').classList.toggle('hidden', needsStore || which !== 'capture');
@@ -754,6 +925,8 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Enter' && priceValue(S.price) !== null) saveObservation();
 });
 $('tabSearch').addEventListener('click', () => showTab('search'));
+$('qCode').addEventListener('keydown', e => { if (e.key === 'Enter') qLookup(e.target.value); });
+$('qCamBtn').addEventListener('click', () => qCamOn ? qStopCam() : qStartCam());
 document.addEventListener('click', e => {
   if (!e.target.closest('.combo')) $('storeDrop').classList.add('hidden');
 });
