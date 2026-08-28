@@ -90,6 +90,12 @@ table.gridtable tbody td{padding:3px 6px; border-bottom:1px solid var(--line)}
   text-overflow:ellipsis; max-width:280px}
 .prodcell.found{color:var(--ink); font-weight:600}
 .prodcell.miss{color:var(--warn); font-weight:600}
+/* Editable description for a barcode that resolved to "ไม่พบ" — an amber left border marks it
+   as unresolved/needs-typing, distinct from the plain read-only text the cell shows otherwise. */
+.cell-desc{width:100%; padding:8px 9px; font-size:13.5px; font-weight:600; border:1.5px solid transparent;
+  border-left:3px solid var(--amber); border-radius:6px; background:var(--amber-bg); color:var(--ink)}
+.cell-desc:focus{outline:none; border-color:var(--ink); border-left-color:var(--amber)}
+.cell-desc::placeholder{color:var(--amber); font-weight:500; opacity:.85}
 .rm-row{width:26px; height:26px; border-radius:8px; color:var(--mut); font-size:15px; line-height:1}
 .rm-row:hover{background:var(--warn-bg); color:var(--warn)}
 
@@ -113,6 +119,7 @@ table.gridtable tbody td{padding:3px 6px; border-bottom:1px solid var(--line)}
   font-size:22px; margin-top:3px}
 .statgrid2 .val.warn{color:var(--warn)}
 .statgrid2 .val.ok{color:var(--ok)}
+.stat-sub{display:block; font-size:10.5px; font-weight:600; color:var(--amber); margin-top:2px}
 .empty-note{font-size:13px; color:var(--mut)}
 .unresolved-item{display:flex; justify-content:space-between; align-items:center; gap:8px;
   width:100%; text-align:left; padding:9px 10px; border-radius:8px; border:1px solid var(--line);
@@ -289,7 +296,8 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
           <div class="statgrid2">
             <div><span class="lab">แถวทั้งหมด</span><span class="val" id="statTotal">0</span></div>
             <div><span class="lab">พบสินค้าแล้ว</span><span class="val ok" id="statResolved">0</span></div>
-            <div><span class="lab">ไม่พบ</span><span class="val warn" id="statNotFound">0</span></div>
+            <div><span class="lab">ไม่พบ</span><span class="val warn" id="statNotFound">0</span>
+              <span class="stat-sub" id="statNotFoundDesc"></span></div>
             <div><span class="lab">เลขอาจผิด</span><span class="val warn" id="statBadCheck">0</span></div>
           </div>
         </div>
@@ -535,6 +543,10 @@ function applyLookupResult(rowId, code, d){
    typing speed, not a data-binding layer. */
 let rowSeq = 0;
 const rowMeta = new Map();   // rowId -> { checked, product, notFound, offline }
+// rowId -> typed description, only ever shown/editable while that row's lookup says "ไม่พบ".
+// Kept separate from rowMeta (which commitBarcode replaces wholesale on every re-lookup) so a
+// typed description survives a barcode being re-checked, and is only ever dropped on row removal.
+const rowDesc = new Map();
 
 function rowHtml(id, data = {}){
   const barcode = esc(data.barcode || '');
@@ -560,6 +572,7 @@ function addRow(data = {}, focus = true){
   const id = ++rowSeq;
   $('gridBody').insertAdjacentHTML('beforeend', rowHtml(id, data));
   rowMeta.set(id, { checked: false, product: null, notFound: false, offline: false });
+  rowDesc.set(id, data.desc || '');
   if (data.barcode) { updateBarcodeValidity(id); setProductSearching(id); queueLookup(id, data.barcode); }
   if (focus) focusCell(id, 'barcode');
   return id;
@@ -570,6 +583,7 @@ function removeRow(id){
   if (!tr) return;
   tr.remove();
   rowMeta.delete(id);
+  rowDesc.delete(id);
   if (!allRowIds().length) addRow({}, false);   // the grid always keeps at least one row to type into
   saveDraft(); renderSummary(); updateSubmitButton();
 }
@@ -600,8 +614,11 @@ function renderProductCell(id){
     cell.textContent = [p.brand, p.item, p.sku].filter(Boolean).join(' ') || p.barcode || '—';
     cell.classList.add('found');
   } else if (meta.notFound) {
-    cell.textContent = 'ไม่พบ';
+    // Turn the cell into a real input so the admin can leave a name for whoever works the
+    // review queue later — a bare barcode number is not much to go on.
     cell.classList.add('miss');
+    cell.innerHTML = `<input type="text" class="cell-desc" autocomplete="off" autocorrect="off"
+      spellcheck="false" placeholder="ไม่พบ — พิมพ์ชื่อสินค้า" value="${esc(rowDesc.get(id) || '')}">`;
   } else if (meta.offline) {
     cell.textContent = 'ไม่มีสัญญาณ';
   } else {
@@ -649,7 +666,8 @@ function collectRows(){
       id,
       barcode: tr.querySelector('.cell-barcode').value.trim(),
       price: tr.querySelector('.cell-price').value.trim(),
-      flag: tr.querySelector('.cell-flag').value
+      flag: tr.querySelector('.cell-flag').value,
+      desc: rowDesc.get(id) || ''
     };
   });
 }
@@ -936,12 +954,15 @@ function renderSummary(){
 
   const total = rows.length;
   const resolved = rows.filter(r => r.meta.product).length;
-  const notFound = rows.filter(r => r.meta.notFound).length;
+  const notFoundRows = rows.filter(r => r.meta.notFound);
+  const notFound = notFoundRows.length;
+  const notFoundDesc = notFoundRows.filter(r => (rowDesc.get(r.id) || '').trim()).length;
   const badCheck = rows.filter(r => !isValidBarcode(r.barcode)).length;
 
   $('statTotal').textContent = String(total);
   $('statResolved').textContent = String(resolved);
   $('statNotFound').textContent = String(notFound);
+  $('statNotFoundDesc').textContent = notFoundDesc ? `${notFoundDesc} มีชื่อแล้ว` : '';
   $('statBadCheck').textContent = String(badCheck);
 
   const unresolved = rows.filter(r => r.meta.notFound || !isValidBarcode(r.barcode));
@@ -969,7 +990,7 @@ function updateSubmitButton(){
    The whole batch — store, date, mode, every row — is saved on every change. Losing 40 typed
    rows to an accidentally-closed tab is not an acceptable failure mode for this tool. */
 function saveDraft(){
-  const rows = collectRows().map(r => ({ barcode: r.barcode, price: r.price, flag: r.flag }));
+  const rows = collectRows().map(r => ({ barcode: r.barcode, price: r.price, flag: r.flag, desc: r.desc }));
   // selRows carries brand/item/sku too — not just the resolved barcode — so a row the admin
   // was still narrowing (not yet resolved) is not silently lost on reload.
   const selRows = collectSelRows().map(r => ({ brand: r.brand, item: r.item, sku: r.sku,
@@ -1055,16 +1076,25 @@ async function submitBatch(){
   let skipped = 0;
   // Barcode-mode and select-mode rows end up as identical observation records — same shape,
   // same source — so both grids feed the same push, rather than two separate submit paths.
-  const pushRow = r => {
+  const pushRow = (r, desc) => {
     const pv = priceValue(r.price);
     if (!r.barcode || pv === null) { skipped++; return; }
     items.push(buildObs({
       obsId: makeId('O'), ts, storeId: S.storeId,
-      barcode: r.barcode, price: pv, flag: r.flag, by: DEVICE, source: 'manual'
+      barcode: r.barcode, price: pv, flag: r.flag, by: DEVICE, source: 'manual',
+      // Always sent — same rule as index.html's saveObservation(). The backend creates a
+      // Products row ONLY when the barcode is genuinely unknown, so an observation can never
+      // point at a product that doesn't exist and silently vanish from buildAnalysis(). For
+      // เลือกสินค้า rows the barcode always already resolves to a known product, so this is a
+      // harmless no-op there — the backend skips creation whenever the barcode is already known.
+      // brand stays "" on purpose: the review queue (เติมข้อมูลสินค้า) selects products where
+      // needs_info = YES OR brand is blank, so an empty brand keeps this product in that queue
+      // for someone to finish, even after it has a typed name.
+      newProduct: { brand: '', item: (desc || '').trim(), sku: '', photo: null }
     }));
   };
-  collectRows().forEach(pushRow);
-  collectSelRows().forEach(pushRow);
+  collectRows().forEach(r => pushRow(r, r.desc));
+  collectSelRows().forEach(r => pushRow(r, ''));
 
   if (!items.length) { toast('ไม่มีรายการที่บันทึกได้', true); return; }
 
@@ -1654,7 +1684,13 @@ $('gridBody').addEventListener('focusout', e => {
   }
 });
 $('gridBody').addEventListener('input', e => {
-  if (e.target.classList.contains('cell-price')) updateSubmitButton();
+  const t = e.target;
+  if (t.classList.contains('cell-price')) updateSubmitButton();
+  else if (t.classList.contains('cell-desc')) {
+    const tr = t.closest('tr');
+    if (tr) rowDesc.set(Number(tr.dataset.row), t.value);
+    renderSummary();
+  }
   scheduleDraftSave();
 });
 $('gridBody').addEventListener('change', e => {
