@@ -66,7 +66,7 @@ main{flex:1; padding:24px; display:flex; flex-direction:column; gap:16px;
 .segmented button.on{background:var(--ink); color:#fff}
 
 /* ---- split ---- */
-.split{display:grid; grid-template-columns:1fr 340px; gap:16px; align-items:start}
+.split{display:flex; flex-direction:column; gap:12px}
 #selectModeCard{grid-column:1/-1}
 
 .gridhead{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px}
@@ -102,7 +102,11 @@ table.gridtable tbody td{padding:3px 6px; border-bottom:1px solid var(--line)}
   font-size:13px; border:1.5px solid transparent; border-radius:8px; background:transparent; color:var(--mut)}
 
 /* ---- summary ---- */
-.statgrid2{display:grid; grid-template-columns:repeat(2,1fr); gap:10px; text-align:left}
+.statgrid2{display:flex; flex-wrap:wrap; gap:22px; text-align:left}
+.statgrid2 > div{min-width:96px}
+#summaryCard{display:flex; flex-wrap:wrap; align-items:flex-start; gap:16px 28px}
+#summaryCard .eyebrow{margin:0 0 6px}
+#summaryCard .sumblock{min-width:220px; flex:1}
 .statgrid2 .lab{display:block; font-size:10.5px; font-weight:700; letter-spacing:.5px;
   color:var(--mut); text-transform:uppercase}
 .statgrid2 .val{display:block; font-family:'IBM Plex Mono',monospace; font-weight:700;
@@ -198,7 +202,6 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
 #smSaveBtn:disabled{opacity:.35; cursor:default}
 
 @media (max-width:900px){
-  .split{grid-template-columns:1fr}
   .rv-layout{grid-template-columns:1fr}
 }
 </style>
@@ -281,15 +284,19 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
       </div>
 
       <div class="card" id="summaryCard">
-        <div class="eyebrow">สรุปสถานะ</div>
-        <div class="statgrid2">
-          <div><span class="lab">แถวทั้งหมด</span><span class="val" id="statTotal">0</span></div>
-          <div><span class="lab">พบสินค้าแล้ว</span><span class="val ok" id="statResolved">0</span></div>
-          <div><span class="lab">ไม่พบ</span><span class="val warn" id="statNotFound">0</span></div>
-          <div><span class="lab">เลขอาจผิด</span><span class="val warn" id="statBadCheck">0</span></div>
+        <div class="sumblock">
+          <div class="eyebrow">สรุปสถานะ</div>
+          <div class="statgrid2">
+            <div><span class="lab">แถวทั้งหมด</span><span class="val" id="statTotal">0</span></div>
+            <div><span class="lab">พบสินค้าแล้ว</span><span class="val ok" id="statResolved">0</span></div>
+            <div><span class="lab">ไม่พบ</span><span class="val warn" id="statNotFound">0</span></div>
+            <div><span class="lab">เลขอาจผิด</span><span class="val warn" id="statBadCheck">0</span></div>
+          </div>
         </div>
-        <div class="eyebrow" style="margin-top:16px">รายการค้าง</div>
-        <div id="unresolvedList"><div class="empty-note">ไม่มีรายการค้าง</div></div>
+        <div class="sumblock">
+          <div class="eyebrow">รายการค้าง</div>
+          <div id="unresolvedList"><div class="empty-note">ไม่มีรายการค้าง</div></div>
+        </div>
       </div>
 
     </div>
@@ -666,7 +673,7 @@ async function ensureVocabLoaded(){
   const d = await api('?action=vocab');
   SEL.vocabLoading = false;
   if (d.ok && Array.isArray(d.brands)) { SEL.vocabLoaded = true; SEL.brands = d.brands; }
-  else toast('โหลดรายชื่อยี่ห้อไม่สำเร็จ', true);
+  else toast(backendMsg(d, 'โหลดรายชื่อยี่ห้อไม่สำเร็จ'), true);
 }
 
 /** One product list per brand, queued and capped like the barcode-lookup queue above so
@@ -1123,14 +1130,14 @@ async function ensureReviewLoaded(){
   const [ni, vo] = await Promise.all([ api('?action=needsinfo&limit=300'), api('?action=vocab') ]);
   RV.loading = false;
   if (!ni.ok || !Array.isArray(ni.p)) {
-    toast('โหลดรายการค้างไม่สำเร็จ', true);
+    toast(backendMsg(ni, 'โหลดรายการค้างไม่สำเร็จ'), true);
     renderReviewList();
     return;   // RV.loaded stays false so switching back to this tab retries
   }
   RV.items = ni.p;
   RV.cdn = ni.cdn || '';
   if (vo.ok) RV.vocab = { brands: vo.brands || [], tree: vo.tree || {} };
-  else toast('โหลดรายการยี่ห้อ/หมวดหมู่ไม่สำเร็จ', true);
+  else toast(backendMsg(vo, 'โหลดรายการยี่ห้อ/หมวดหมู่ไม่สำเร็จ'), true);
   RV.loaded = true;
   selectProduct(RV.items.length ? RV.items[0].barcode : null);
 }
