@@ -1,71 +1,27 @@
 /**
- * PRICE SCOUT — backend v10
- * = v9 + a precomputed analysis payload so the viewer stops timing out.
+ * PRICE SCOUT — backend v11
  *
- * WHY v10: ?action=viewdata takes 60s and returns 4.65MB against the live data (26,289
- * products x 12 cols + 45,167 observations x 8 cols, read and joined on every single request),
- * and the viewer page never finishes loading it. Most of that weight is product image URLs
- * (1.41MB raw) that the viewer only ever shows one of at a time. buildAnalysis() does the
- * expensive read-and-join ONCE, folds each product's observations down to the few numbers a
- * list/search view actually needs (ref price, range, store count, promo depth — no image URL),
- * and writes the result to a Drive file. GET ?action=summary then just serves that file's
- * content — reading a ~2MB file is fast, which is the entire point, so it must never recompute
- * on the request path except the very first time the file does not exist yet. A daily trigger
- * (installAnalysisTrigger, run once by hand) and a Sheet menu item both call buildAnalysis() to
- * keep the file fresh. `viewdata` is untouched: viewer.html still calls it until it is rebuilt
- * to use `summary`, and removing or reshaping it now would break the live page.
+ * Serves three static pages from one Sheet: index.html (phone capture), admin.html (desk
+ * entry + product/store admin), viewer.html (analysis).
  *
- * WHY v9: until now a store could only come into being as a side effect of an observation
- * POST carrying `new_store` — the admin page had no way to add one directly. POST
- * {type:"createStore", store_id, store, region, channel, notes} fills that gap. It reuses
- * storeKey() rather than comparing raw names, so "eveandboy" and "EVEANDBOY" resolve to the
- * same row instead of creating a duplicate — that exact bug has already happened once in
- * production data — and it hands back the EXISTING row's store_id when the shop is already
- * known, because inventing a second id for the same shop orphans observations (`viewdata`
- * drops rows whose store_id does not resolve, silently). A `store_id` the caller omits is
- * generated server-side in the project's existing "S-XXXXXX" format.
+ * DEPLOYING — keeps the same /exec URL, which every page has hard-coded:
+ *   Editor → paste → Save → Deploy → Manage deployments → ✏️ → Version: New version → Deploy
+ *   NEVER "New deployment" — that mints a new URL and breaks all three pages.
  *
- * WHY v8: the admin screen needs to browse and fix the product master without ever touching
- * row order or column position. Four additions:
- *  1. GET vocab — brand list + category_1/2/3 tree, for dropdowns. Cached 1h; the scan behind
- *     it touches the whole Products tab, and the vocabulary barely changes hour to hour.
- *  2. GET needsinfo — the review queue (needs_info = YES, or brand still blank). Never cached:
- *     an admin who just fixed a row must see it drop off the list on the next fetch.
- *  3. GET psearch — free-text product search for the "attach existing product" flow.
- *  4. POST updateProduct / updateStore / uploadImage — edit a row in place through the same
- *     batch mechanism as obs/tunsong. updateProduct and uploadImage evict the `lk:` cache
- *     entry for that barcode, or `lookup` keeps serving the pre-edit product for up to 6h.
- *     updateStore refuses a rename that collides with another store's storeKey() — that would
- *     silently merge two shops in every aggregate downstream.
+ * ONE-TIME SETUP (already done; here for a rebuild from scratch):
+ *   backfillSeq()             stamps Products column O with a monotonic seq
+ *   installAnalysisTrigger()  nightly 03:00 buildAnalysis()
  *
- * WHY v6: the capture page no longer downloads the product master. It resolves one barcode
- * at a time while the user is typing the price, so the round trip is hidden rather than
- * waited on. `delta` and the `seq` column stay — they cost nothing and the viewer may use
- * them later.
+ * TWO RULES THAT ARE NOT OBVIOUS AND HAVE EACH ALREADY CAUSED A BUG:
+ *  1. Barcodes are stored as NUMBERS, so leading zeros are gone and a UPC-A may arrive as 12
+ *     digits or as 13 with a leading zero. Compare through normBarcode(), never raw.
+ *  2. Store names must be compared through storeKey(). "eveandboy" and "EVEANDBOY" once became
+ *     two separate shops in live data.
  *
- * WHAT CHANGED FROM v4, AND WHY
- *  1. Retries no longer duplicate rows. v4 appended unconditionally, so a POST that reached
- *     the Sheet but whose response was lost — what a weak signal does — was retried and
- *     written twice. A repeated obs_id now reports "duplicate" instead.
- *  2. An unknown `type` no longer silently succeeds. v4 wrote nothing and still returned
- *     ok:true, so the client discarded the row. That was silent data loss.
- *  3. Zero-padded barcodes no longer create duplicate Products rows. The Sheet stores
- *     barcodes as numbers, so a 12-digit UPC-A is 773602335374; a phone reporting
- *     0773602335374 did not match. Both sides now normalise before comparing.
- *  4. POST accepts {type:"batch", items:[...]} — a shop's worth of queued rows in one call.
- *  5. GET ?action=delta&after_seq=N returns only products added since the caller's snapshot.
- *
- * NOTHING DEPENDS ON ROW ORDER. delta keys on the `seq` column and retry detection keys on
- * the cache, so sorting any tab is harmless. People sort spreadsheets; assuming otherwise
- * is a defect waiting to happen.
- *
- * FIRST-TIME SETUP: run backfillSeq() ONCE from the editor before deploying.
- *
- * TO UPDATE WITHOUT BREAKING THE CAPTURE PAGE (keeps the same /exec URL):
- * 1. Apps Script editor → select all → paste this file → Save
- * 2. Deploy → Manage deployments → ✏️ (edit) → Version: "New version" → Deploy
- *    (Do NOT create a "New deployment" — that makes a new URL.)
+ * Nothing depends on row order: sorting any tab is harmless. Columns ARE read by position —
+ * new columns go on the far right only.
  */
+
 
 const CDN_PREFIX = "https://prodenbcdn.azureedge.net/products/";
 const PHOTO_FOLDER = "PriceScout Photos";
@@ -74,7 +30,6 @@ const ANALYSIS_FILE = "pricescout-analysis.json";  // the one file buildAnalysis
 // already usable. Folded into the main payload they were 481KB gzipped of a 503KB response —
 // a third of the wait, for pictures that are not needed to render a single result.
 const IMAGES_FILE = "pricescout-images.json";
-const FLAGS = ["normal", "promo", "short_shelf_life"];
 const SEQ_COL = 15;              // Products column O — monotonic append counter
 const RECENT_OBS_WINDOW = 300;   // fallback only; the cache is the real retry guard
 const OBS_CACHE_SEC = 21600;     // 6h — far longer than any realistic retry
@@ -100,10 +55,7 @@ function genStoreId() {
   return "S-" + s;
 }
 
-/**
- * One-time setup. Run manually from the Apps Script editor, once, before deploying v5.
- * Safe to run again — rows that already carry a seq keep it.
- */
+/** One-time: stamps Products column O. Safe to re-run — existing seq values are kept. */
 function backfillSeq() {
   const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
   const last = ps.getLastRow();
@@ -133,23 +85,19 @@ function onOpen() {
     .addToUi();
 }
 
-/**
- * Menu entry point for buildAnalysis(). Reports the product count and the timestamp that got
- * written into the payload so whoever ran it can see the job actually did something, without
- * having to go open the Drive file.
- */
+/** Menu + editor entry point for buildAnalysis(). */
 function runBuildAnalysis() {
-  const ui = SpreadsheetApp.getUi();
   const n = buildAnalysis();
-  const tz = Session.getScriptTimeZone();
-  const stamp = Utilities.formatDate(new Date(), tz, "yyyy-MM-dd HH:mm");
-  ui.alert("อัปเดตข้อมูลวิเคราะห์แล้ว: " + n + " รายการ (" + stamp + ")");
+  const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm");
+  const msg = "อัปเดตข้อมูลวิเคราะห์แล้ว: " + n + " รายการ (" + stamp + ")";
+  Logger.log(msg);
+  // getUi() throws when this is run from the editor's Run button rather than the Sheet menu —
+  // and the editor is where people look for it. Log either way, alert only when there is a UI.
+  try { SpreadsheetApp.getUi().alert(msg); } catch (err) {}
 }
 
-/**
- * Put Products back in its original order after someone has sorted it.
- * With `seq` in place nothing breaks when the tab is sorted — this is convenience.
- */
+/** Restores the original Products order after someone sorts the tab. Convenience only —
+ *  nothing depends on row order. */
 function restoreProductOrder() {
   const ui = SpreadsheetApp.getUi();
   const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
@@ -162,78 +110,19 @@ function restoreProductOrder() {
 /* ================= GET ================= */
 function doGet(e) {
   const action = (e && e.parameter && e.parameter.action) || "";
-  if (action === "bootstrap") return bootstrap();
-  if (action === "viewdata") return viewdata();
   if (action === "summary") return summary();
   if (action === "images") return imagesPayload();
   if (action === "rebuild") return rebuild();
-  if (action === "delta") return delta(e.parameter.after_seq);
   if (action === "lookup") return lookup(e.parameter.barcode);
   if (action === "prices") return pricesEndpoint(e.parameter.barcode);
   if (action === "stores") return stores();
   if (action === "vocab") return vocab();
   if (action === "needsinfo") return needsInfo(e.parameter.limit);
   if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
-  return json({ ok: true, msg: "Price Scout API v10" });
+  return json({ ok: true, msg: "Price Scout API v11" });
 }
 
-/* ---- capture page: products (light) + stores ---- */
-function bootstrap() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const ps = ss.getSheetByName("Products");
-  let products = [];
-  if (ps.getLastRow() > 1) {
-    const v = ps.getRange(2, 1, ps.getLastRow() - 1, 10).getValues();
-    // size and unit are appended LAST so indexes 0-4 keep their meaning for older clients
-    products = v.map(r => [String(r[0]), r[1] || "", r[2] || "", r[3] || "",
-      String(r[9] || "").replace(CDN_PREFIX, "~"), r[4] || "", r[5] || ""]).filter(r => r[0]);
-  }
-  const st = ss.getSheetByName("Stores");
-  let stores = [];
-  if (st.getLastRow() > 1) {
-    const v = st.getRange(2, 1, st.getLastRow() - 1, 2).getValues();
-    stores = v.filter(r => r[0] && r[1]).map(r => [String(r[0]), String(r[1])]);
-  }
-  return json({ ok: true, cdn: CDN_PREFIX, seq: maxSeq(ps), p: products, s: stores });
-}
-
-/**
- * Products whose seq is above the caller's. Order-independent by construction: sorting the
- * tab moves rows around but never changes a seq, so the same set comes back either way.
- * Reads one column, then only the rows that actually qualify — usually none.
- */
-function delta(afterSeq) {
-  const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
-  const last = ps.getLastRow();
-  if (last < 2) return json({ ok: true, seq: 0, p: [] });
-
-  const seqs = ps.getRange(2, SEQ_COL, last - 1, 1).getValues();
-  const after = Number(afterSeq || 0);
-  let top = 0;
-  const rows = [];
-  for (let i = 0; i < seqs.length; i++) {
-    const n = Number(seqs[i][0]) || 0;
-    if (n > top) top = n;
-    if (n > after) rows.push(i + 2);          // sheet row number
-  }
-  if (!rows.length) return json({ ok: true, seq: top, p: [] });
-
-  const p = rows.map(function (rowNum) {
-    const r = ps.getRange(rowNum, 1, 1, 4).getValues()[0];
-    return [String(r[0]), r[1] || "", r[2] || "", r[3] || ""];
-  });
-  return json({ ok: true, seq: top, p: p });
-}
-
-/**
- * One barcode -> the product plus what other shops charge for it.
- *
- * Uses Sheets' native TextFinder rather than pulling 26,289 barcodes into JS on every scan.
- * TextFinder runs inside Sheets and returns only matching cells, so cost tracks the number
- * of hits, not the size of the tab. Barcodes are searched in every form they may appear in,
- * because the Sheet stores them as numbers and a UPC-A may be scanned as 12 digits or as 13
- * with a leading zero.
- */
+/** Every form a barcode may appear in, since the Sheet stores them as numbers. */
 function barcodeForms(barcode) {
   const key = normBarcode(barcode);
   const forms = [String(barcode).trim(), key];
@@ -254,11 +143,8 @@ function findRow(sheet, col, forms) {
   return -1;
 }
 
-/**
- * Product identity only. Prices live at ?action=prices so the two run in PARALLEL from the
- * client: the name appears as soon as identity resolves instead of waiting on a scan of
- * 45,165 observation rows. Results are cached — the product master barely changes.
- */
+/** Product identity only — prices are a separate endpoint so the client can fetch both at
+ *  once and show the name without waiting on a scan of every observation. */
 function lookup(barcode) {
   if (!barcode) return json({ ok: true, found: false });
   const cache = CacheService.getScriptCache();
@@ -356,11 +242,8 @@ function stores() {
   return json({ ok: true, s: s });
 }
 
-/**
- * Brand list + category_1/2/3 tree, for the admin's dropdowns. One scan of Products columns
- * B, G, H, I, cached for an hour — the vocabulary changes rarely and the scan touches every
- * row, so paying for it on every keystroke would be wasteful.
- */
+/** Brand list + category tree for the admin dropdowns. Cached an hour; the scan touches
+ *  every row and the vocabulary barely changes. */
 function vocab() {
   const cache = CacheService.getScriptCache();
   const hit = cache.get("vocab");
@@ -425,11 +308,7 @@ function needsInfo(limitParam) {
   return json({ ok: true, cdn: CDN_PREFIX, p: out });
 }
 
-/**
- * Free-text product search for the "attach existing product" flow. Reads barcode/brand/item/
- * sku/size/unit once, then stops as soon as `limit` matches are found rather than filtering
- * the whole tab and slicing — with 26k+ rows the difference matters.
- */
+/** Free-text product search. Stops at `limit` rather than filtering the whole tab. */
 function psearch(q, brandFilter, limitParam) {
   let limit = Number(limitParam) || 50;
   if (limit < 1) limit = 50;
@@ -455,80 +334,9 @@ function psearch(q, brandFilter, limitParam) {
   return json({ ok: true, p: out });
 }
 
-/* ---- viewer page: everything, dictionary-compressed ---- */
-function viewdata() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const tz = Session.getScriptTimeZone();
-  const day = d => (d instanceof Date) ? Utilities.formatDate(d, tz, "yyyy-MM-dd") : String(d || "").slice(0, 10);
+/* ---- precomputed analysis, built on a schedule and served from Drive ---- */
 
-  // dictionaries
-  const dict = list => { const m = {}, arr = []; return {
-    idx: v => { v = String(v || ""); if (!(v in m)) { m[v] = arr.length; arr.push(v); } return m[v]; },
-    arr: arr }; };
-  const B = dict(), C1 = dict(), C2 = dict(), C3 = dict();
-
-  // Products: barcode, brandIdx, item, sku, c1, c2, c3, img
-  const ps = ss.getSheetByName("Products");
-  const pIdxByBarcode = {};
-  let p = [];
-  if (ps.getLastRow() > 1) {
-    const v = ps.getRange(2, 1, ps.getLastRow() - 1, 12).getValues();
-    v.forEach(r => {
-      const bc = String(r[0]); if (!bc) return;
-      pIdxByBarcode[bc] = p.length;
-      p.push([bc, B.idx(r[1]), r[2] || "", r[3] || "",
-        C1.idx(r[6]), C2.idx(r[7]), C3.idx(r[8]),
-        String(r[9] || "").replace(CDN_PREFIX, "~"),
-        r[11] === "YES" ? 1 : 0]);
-    });
-  }
-
-  // Stores: store_id, name, region, channel
-  const st = ss.getSheetByName("Stores");
-  const sIdxById = {};
-  let s = [];
-  if (st.getLastRow() > 1) {
-    const v = st.getRange(2, 1, st.getLastRow() - 1, 4).getValues();
-    v.forEach(r => {
-      if (!r[0]) return;
-      sIdxById[String(r[0])] = s.length;
-      s.push([String(r[1] || r[0]), String(r[2] || ""), String(r[3] || "")]);
-    });
-  }
-
-  // Observations: pIdx, sIdx, price, flagIdx, date
-  const os = ss.getSheetByName("Observations");
-  let o = [];
-  if (os.getLastRow() > 1) {
-    const v = os.getRange(2, 1, os.getLastRow() - 1, 8).getValues();
-    v.forEach(r => {
-      const pi = pIdxByBarcode[String(r[3])], si = sIdxById[String(r[2])];
-      if (pi === undefined || si === undefined || r[4] === "" || r[4] == null) return;
-      let f = FLAGS.indexOf(String(r[5] || "normal")); if (f < 0) f = 0;
-      o.push([pi, si, Number(r[4]), f, day(r[1])]);
-    });
-  }
-
-  // Tunsong: pIdx, sIdx, price, info_source, confidence, date
-  const ts = ss.getSheetByName("Tunsong");
-  let t = [];
-  if (ts && ts.getLastRow() > 1) {
-    const v = ts.getRange(2, 1, ts.getLastRow() - 1, 8).getValues();
-    v.forEach(r => {
-      const pi = pIdxByBarcode[String(r[3])], si = sIdxById[String(r[2])];
-      if (pi === undefined || si === undefined || r[4] === "" || r[4] == null) return;
-      t.push([pi, si, Number(r[4]), String(r[5] || ""), String(r[6] || ""), day(r[1])]);
-    });
-  }
-
-  return json({ ok: true, cdn: CDN_PREFIX, brands: B.arr, c1: C1.arr, c2: C2.arr, c3: C3.arr,
-                p: p, s: s, o: o, t: t, generated: day(new Date()) });
-}
-
-/* ---- precomputed analysis payload: v10's fix for viewdata's 60s/4.65MB response ---- */
-
-/** Same string-interning approach as viewdata's local `dict`, pulled out as its own instance
- *  so buildAnalysis() can use it without touching viewdata's working code. */
+/** Interns repeated strings (brands, categories) so the payload ships indexes, not text. */
 function makeDict() {
   const m = {}, arr = [];
   return {
@@ -556,11 +364,8 @@ function round2(x) {
  * in-memory work — no getRange inside a loop — so this stays well inside the 6-minute limit
  * even at 26k products x 45k observations.
  *
- * Unlike viewdata's join (raw String(barcode) on both sides, which silently drops a row when a
- * 12-digit UPC-A observation meets a 13-digit product barcode or vice versa), this joins on
- * normBarcode() on both sides, so that class of row is no longer lost.
- *
- * Returns the number of products written, so the menu item and the trigger log can report it.
+ * Joins observations to products through normBarcode() on BOTH sides, or a 12-digit UPC-A
+ * observation never matches its 13-digit product row and vanishes from analysis silently.
  */
 function buildAnalysis() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -672,9 +477,8 @@ function findDriveFile(folder, fileName) {
   return files.hasNext() ? files.next() : null;
 }
 
-/** Overwrites the existing analysis file's content rather than creating a second one — Drive
- *  happily keeps duplicate file names, and a second copy would leave `summary` at the mercy of
- *  whichever one the folder iterator happens to return first. */
+/** Overwrites in place — Drive allows duplicate filenames, and a second copy would leave the
+ *  reader at the mercy of whichever the iterator returns first. */
 function writeDriveJson(fileName, content) {
   const folders = DriveApp.getFoldersByName(PHOTO_FOLDER);
   const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(PHOTO_FOLDER);
@@ -686,12 +490,8 @@ function writeDriveJson(fileName, content) {
   else folder.createFile(fileName, content, "application/json");
 }
 
-/**
- * Serves the precomputed analysis payload straight from Drive. Reading a ~2MB file is fast —
- * that is the entire reason this endpoint exists — so it must NOT recompute on every request;
- * buildAnalysis() only runs here the very first time, before the file exists at all. Not backed
- * by CacheService: the payload is around 2MB and CacheService caps out around 100KB per key.
- */
+/** Serves the prebuilt payload from Drive. Never recomputes except when the file is missing
+ *  — recomputing per request is the 60s problem this endpoint exists to avoid. */
 function summary() { return servePrebuilt(ANALYSIS_FILE); }
 
 /**
@@ -716,14 +516,9 @@ function servePrebuilt(fileName) {
 }
 
 /**
- * Rebuilds the analysis file on demand, so the viewer can offer a button instead of making
- * someone open the Sheet.
- *
- * Deliberately does NOT take the script lock that doPost uses. buildAnalysis runs for tens of
- * seconds, and holding that lock would stall every price save coming off a phone in a shop —
- * the one thing that must never wait on analysis. A short CacheService flag stops two rebuilds
- * overlapping instead; the worst case if it races is duplicated work, not corrupted data,
- * because the file is written whole.
+ * On-demand rebuild for the viewer's button. Deliberately does NOT take doPost's script lock:
+ * this runs for tens of seconds and would stall price saves coming off a phone in a shop. A
+ * cache flag prevents overlap instead; a race costs duplicated work, not corrupted data.
  */
 function rebuild() {
   const cache = CacheService.getScriptCache();
@@ -742,12 +537,8 @@ function rebuild() {
   }
 }
 
-/**
- * One-time setup, same as backfillSeq() above: run this ONCE by hand from the Apps Script
- * editor after deploying v10. It is never called from onOpen or any endpoint, so it cannot fire
- * on its own. Deletes any existing trigger on the same handler first, so running it again after
- * a redeploy updates the schedule instead of stacking a second daily run on top of the first.
- */
+/** One-time: run by hand from the editor. Clears the old trigger first so re-running
+ *  reschedules rather than stacking a second daily build. */
 function installAnalysisTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === "buildAnalysis") ScriptApp.deleteTrigger(t);
@@ -775,12 +566,11 @@ function doPost(e) {
 }
 
 /**
- * Read the lookups once per request rather than once per record.
+ * Lookups read once per request, not once per record.
  *
- * Retry detection is cache-first. Scanning "the last N rows" would depend on Observations
- * still being in insertion order, which no one can guarantee — a sorted tab would hide a
- * retry and let a duplicate through. The cache does not care about order. The row scan is
- * kept only as a fallback for a cache eviction.
+ * Retry detection is cache-first: scanning "the last N rows" would assume Observations is
+ * still in insertion order, and a sorted tab would then hide a retry and admit a duplicate.
+ * The row scan below is only a fallback for a cache eviction.
  */
 function newWriteContext(ss) {
   const cache = CacheService.getScriptCache();
@@ -818,8 +608,8 @@ function writeOne(ss, d, ctx) {
   const ts = d.ts ? new Date(d.ts) : new Date();
 
   // If this store name already exists, the row is NOT re-added — but the caller invented its
-  // own store_id, which would orphan every observation it writes (viewdata drops rows whose
-  // store_id does not resolve, silently). Hand back the canonical id so the client can adopt it.
+  // own store_id, which would orphan every observation it writes — an observation whose
+  // store_id does not resolve is dropped from analysis silently. Hand back the canonical id.
   let canonicalStore = "";
   if (d.new_store && d.new_store.store_id && d.new_store.store) {
     const at = ctx.storeKeys.indexOf(storeKey(d.new_store.store));
@@ -876,11 +666,8 @@ function writeOne(ss, d, ctx) {
 }
 
 /**
- * Edits an existing Products row in place. Only keys present in `fields` are written — an
- * absent key must leave the cell untouched, but an explicit "" DOES clear it, so the check
- * below is `in`, not truthiness. Columns B..J are contiguous, so a touched field there costs
- * one read + one write no matter how many of the nine keys are present; notes (N) sits past
- * the seq/source/first_seen columns and is written separately only when supplied.
+ * Edits a Products row in place. Only keys PRESENT in `fields` are written: an absent key
+ * leaves the cell alone, an explicit "" clears it — hence `in`, not truthiness.
  */
 function updateProduct(ss, d) {
   const ps = ss.getSheetByName("Products");
@@ -951,10 +738,8 @@ function updateStore(ss, d) {
  * Compares on storeKey(), not the raw name — "eveandboy" and "EVEANDBOY" must resolve to the
  * same row, and this exact bug has already happened once in production data. When the shop
  * already exists, the caller gets back the EXISTING row's store_id rather than the one it
- * asked for: inventing a second id for the same shop orphans observations, and `viewdata`
- * drops rows whose store_id does not resolve, silently. ctx.storeKeys/storeIds were already
- * read once in newWriteContext and are updated here too, so a batch with several createStore
- * items stays consistent within one request without re-reading the sheet.
+ * asked for: a second id for the same shop orphans its observations, which are then dropped
+ * from analysis silently.
  */
 function createStore(ss, d, ctx) {
   const name = String(d.store || "").trim();
@@ -965,8 +750,8 @@ function createStore(ss, d, ctx) {
   if (at >= 0) return { id: ctx.storeIds[at] || "", status: "exists" };
 
   // A caller-supplied id that already belongs to a DIFFERENT shop is refused, not written:
-  // two Stores rows sharing one store_id makes viewdata's id->store map keep only one of
-  // them, so the other shop's observations vanish from analysis with no error anywhere.
+  // two rows sharing one store_id means only one survives the id->store map, so the other
+  // shop's observations vanish from analysis with no error anywhere.
   let id = String(d.store_id || "").trim();
   if (!id || ctx.storeIds.indexOf(id) >= 0) {
     do { id = genStoreId(); } while (ctx.storeIds.indexOf(id) >= 0);

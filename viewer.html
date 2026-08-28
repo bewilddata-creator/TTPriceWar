@@ -243,7 +243,7 @@ const ls = {
 /**
  * Every network call goes through here. No request may hang the UI: a stalled fetch is
  * indistinguishable from a broken app, and that is the exact bug this rewrite exists to fix
- * (the old ?action=viewdata call took 60s for 4.65MB and simply never resolved on a slow link).
+ * (the endpoint this replaced took 60s for 4.65MB and never resolved on a slow link).
  */
 async function api(path, opts = {}, timeout = NET_TIMEOUT) {
   const ctl = new AbortController();
@@ -401,7 +401,7 @@ let IMG = null, imgFetchedOnce = false, imgLenWarned = false, SUMMARY_GENERATED 
 
 /**
  * Decode the ?action=summary payload. Everything here is already aggregated server-side —
- * ref/lo/hi/ns/pd per product — so unlike the old viewdata decode there is no per-observation
+ * ref/lo/hi/ns/pd per product — so unlike the old decode there is no per-observation
  * loop over a raw price log. No image URL and no wholesale (ทุนส่ง) figures exist in this
  * payload; they are fetched on demand (image) or not shown at all (ทุนส่ง) — see openDetail().
  */
