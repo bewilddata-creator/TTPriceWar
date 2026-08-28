@@ -70,6 +70,10 @@
 const CDN_PREFIX = "https://prodenbcdn.azureedge.net/products/";
 const PHOTO_FOLDER = "PriceScout Photos";
 const ANALYSIS_FILE = "pricescout-analysis.json";  // the one file buildAnalysis() writes/overwrites
+// Images live in their OWN file, fetched by the viewer in the background after the page is
+// already usable. Folded into the main payload they were 481KB gzipped of a 503KB response —
+// a third of the wait, for pictures that are not needed to render a single result.
+const IMAGES_FILE = "pricescout-images.json";
 const FLAGS = ["normal", "promo", "short_shelf_life"];
 const SEQ_COL = 15;              // Products column O — monotonic append counter
 const RECENT_OBS_WINDOW = 300;   // fallback only; the cache is the real retry guard
@@ -161,6 +165,7 @@ function doGet(e) {
   if (action === "bootstrap") return bootstrap();
   if (action === "viewdata") return viewdata();
   if (action === "summary") return summary();
+  if (action === "images") return imagesPayload();
   if (action === "rebuild") return rebuild();
   if (action === "delta") return delta(e.parameter.after_seq);
   if (action === "lookup") return lookup(e.parameter.barcode);
@@ -567,6 +572,7 @@ function buildAnalysis() {
   const ps = ss.getSheetByName("Products");
   const pLast = ps.getLastRow();
   const base = [];
+  const imgs = [];         // index-aligned with base[]; written to its own file
   const pIdxByNorm = {};   // normBarcode(barcode) -> index into base[] / the final row array
   if (pLast > 1) {
     const v = ps.getRange(2, 1, pLast - 1, 12).getValues();
@@ -575,6 +581,7 @@ function buildAnalysis() {
       pIdxByNorm[normBarcode(bc)] = base.length;
       base.push([bc, B.idx(r[1]), r[2] || "", r[3] || "",
         C1.idx(r[6]), C2.idx(r[7]), C3.idx(r[8]), r[11] === "YES" ? 1 : 0]);
+      imgs.push(String(r[9] || "").replace(CDN_PREFIX, "~"));
     });
   }
 
@@ -650,28 +657,33 @@ function buildAnalysis() {
     s: s, p: p
   };
 
-  writeAnalysisFile(JSON.stringify(payload));
+  writeDriveJson(ANALYSIS_FILE, JSON.stringify(payload));
+  // Index-aligned with payload.p, so the viewer needs no barcode keys to join them — position
+  // is the join. Written in the same pass so the two files can never disagree.
+  writeDriveJson(IMAGES_FILE, JSON.stringify({
+    ok: true, generated: payload.generated, cdn: CDN_PREFIX, img: imgs
+  }));
   return p.length;
 }
 
-/** The ANALYSIS_FILE inside PHOTO_FOLDER, or null if neither exists yet. */
-function findAnalysisFile(folder) {
-  const files = folder.getFilesByName(ANALYSIS_FILE);
+/** A named file inside PHOTO_FOLDER, or null. */
+function findDriveFile(folder, fileName) {
+  const files = folder.getFilesByName(fileName);
   return files.hasNext() ? files.next() : null;
 }
 
 /** Overwrites the existing analysis file's content rather than creating a second one — Drive
  *  happily keeps duplicate file names, and a second copy would leave `summary` at the mercy of
  *  whichever one the folder iterator happens to return first. */
-function writeAnalysisFile(content) {
+function writeDriveJson(fileName, content) {
   const folders = DriveApp.getFoldersByName(PHOTO_FOLDER);
   const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(PHOTO_FOLDER);
-  const existing = findAnalysisFile(folder);
+  const existing = findDriveFile(folder, fileName);
   if (existing) existing.setContent(content);
   // "application/json" as a literal, NOT MimeType.JSON — that member does not exist in Apps
   // Script's MimeType enum, so it evaluates to undefined and createFile throws
   // "Argument cannot be null: mimeType". createFile accepts a MIME type string directly.
-  else folder.createFile(ANALYSIS_FILE, content, "application/json");
+  else folder.createFile(fileName, content, "application/json");
 }
 
 /**
@@ -680,17 +692,25 @@ function writeAnalysisFile(content) {
  * buildAnalysis() only runs here the very first time, before the file exists at all. Not backed
  * by CacheService: the payload is around 2MB and CacheService caps out around 100KB per key.
  */
-function summary() {
+function summary() { return servePrebuilt(ANALYSIS_FILE); }
+
+/**
+ * Image URLs only, index-aligned with summary's `p` array. Its own endpoint so the viewer can
+ * paint results first and let pictures arrive afterwards.
+ */
+function imagesPayload() { return servePrebuilt(IMAGES_FILE); }
+
+function servePrebuilt(fileName) {
   let folders = DriveApp.getFoldersByName(PHOTO_FOLDER);
   let folder = folders.hasNext() ? folders.next() : null;
-  let file = folder ? findAnalysisFile(folder) : null;
+  let file = folder ? findDriveFile(folder, fileName) : null;
   if (!file) {
-    buildAnalysis();     // first run ever: nothing to serve yet, so build it once
+    buildAnalysis();     // nothing built yet (or the file was deleted): build both once
     folders = DriveApp.getFoldersByName(PHOTO_FOLDER);
     folder = folders.hasNext() ? folders.next() : null;
-    file = folder ? findAnalysisFile(folder) : null;
+    file = folder ? findDriveFile(folder, fileName) : null;
   }
-  if (!file) return json({ ok: false, error: "analysis file missing after build" });
+  if (!file) return json({ ok: false, error: fileName + " missing after build" });
   return ContentService.createTextOutput(file.getBlob().getDataAsString())
     .setMimeType(ContentService.MimeType.JSON);
 }
