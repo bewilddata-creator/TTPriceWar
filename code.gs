@@ -1,5 +1,5 @@
 /**
- * PRICE SCOUT — backend v14
+ * PRICE SCOUT — backend v15
  *
  * Serves three static pages from one Sheet: index.html (phone capture), admin.html (desk
  * entry + product/store admin), viewer.html (analysis).
@@ -128,7 +128,7 @@ function doGet(e) {
   if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
   if (action === "tunsong") return tunsongEndpoint(e.parameter.barcode);
   if (action === "tunsonglist") return tunsongList(e.parameter.limit);
-  return json({ ok: true, msg: "Price Scout API v14" });
+  return json({ ok: true, msg: "Price Scout API v15" });
 }
 
 /** Every form a barcode may appear in, since the Sheet stores them as numbers. */
@@ -393,7 +393,10 @@ function psearch(q, brandFilter, limitParam) {
   if (limit < 1) limit = 50;
   if (limit > 200) limit = 200;
 
-  const needle = String(q || "").trim().toLowerCase();
+  // Every whitespace-separated token must appear somewhere in brand+item+sku, in any order.
+  // Matching the raw query as ONE substring meant "mille lip" could never find
+  // "MILLE ... Lip Gloss" — the characters are not adjacent — which is how people actually type.
+  const tokens = String(q || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
   const bf = brandFilter ? String(brandFilter).trim().toLowerCase() : "";
   const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
   const last = ps.getLastRow();
@@ -405,7 +408,11 @@ function psearch(q, brandFilter, limitParam) {
       const brand = String(r[1] || "");
       if (bf && brand.toLowerCase() !== bf) continue;
       const hay = (brand + " " + String(r[2] || "") + " " + String(r[3] || "")).toLowerCase();
-      if (needle && hay.indexOf(needle) < 0) continue;
+      let miss = false;
+      for (let t = 0; t < tokens.length; t++) {
+        if (hay.indexOf(tokens[t]) < 0) { miss = true; break; }
+      }
+      if (miss) continue;
       out.push({ barcode: String(r[0]), brand: brand, item: r[2] || "", sku: r[3] || "",
                  size: r[4] || "", unit: r[5] || "" });
     }
