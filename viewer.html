@@ -180,8 +180,16 @@ footer button:disabled{opacity:.5; cursor:default}
     <div class="chips" id="c1Chips"></div>
     <div class="chips lvl2" id="c2Chips"></div>
     <div class="chips" id="c3Chips"></div>
+    <!-- ร้านค้าที่ใช้วิเคราะห์ — hidden entirely until a payload carrying `o` (price observations)
+         has loaded, so a stale pre-`o` cache never offers a filter it cannot actually compute. -->
+    <div class="panel hidden" id="catFilterPanel">
+      <div class="eyebrow">ร้านค้าที่ใช้วิเคราะห์</div>
+      <div class="chips" id="catChanChips"></div>
+      <div class="chips lvl2" id="catStoreChips"></div>
+    </div>
     <div class="panel">
       <div class="eyebrow" id="catTitle"></div>
+      <div class="meta-line" id="catFilterLabel"></div>
       <div class="stats" id="catStats"></div>
       <div class="ladder" id="ladder"></div>
       <div class="ladder-x" id="ladderX"></div>
@@ -443,6 +451,14 @@ async function idbSet(key, val){
 /* ================= STATE ================= */
 let P = [], PBY_BC = new Map(), STORES = [], curTab = 'search', c1Sel = null, c2Sel = null, c3Sel = null;
 let started = false, detailReq = 0;
+// หมวดหมู่ store filter: catChanSel is '__ALL__' | '__BLANK__' (blank-channel bucket) | a channel
+// string; catStoreSel is '__ALL__' or a Set of STORES-array indices (the same indices `o` rows use
+// as sIdx). HAS_OBS reflects whether the currently-loaded payload carries `o` at all — a payload
+// cached from before `o` existed must keep behaving exactly as today, so the filter UI stays
+// hidden until a payload with `o` has actually loaded. storesGen/catFilterStoresGen let buildCat()
+// reset the filter exactly once per fresh STORES array (decode() rebuilds STORES from scratch on
+// every boot/refresh/rebuild, and stale store indices from a previous generation must not linger).
+let catChanSel = '__ALL__', catStoreSel = '__ALL__', HAS_OBS = false, storesGen = 0, catFilterStoresGen = -1;
 // Sort state for the หมวดหมู่ brand table — a plain module var (not `ls`) so it need not survive
 // a reload, but it must survive re-filtering rows via the c1/c2/c3 chips within this page life.
 // Default reproduces the table's original hard-coded order (most products first).
@@ -450,6 +466,10 @@ let catSort = { key: 'n', dir: -1 };
 // The หมวดหมู่ header label, recomputed every renderCat() — the brand modal reuses this exact
 // string so it never disagrees with what the category panel itself is showing.
 let catLabelCur = '';
+// The active store-filter description (e.g. "TT · 3 ร้าน"), recomputed every renderCat() alongside
+// catLabelCur — the brand modal appends this too, so it can never show all-store prices while the
+// table behind it is filtered to one channel.
+let catFilterLabelCur = '';
 // ?action=images is fetched once, lazily, after the first successful render (see start()).
 // IMG holds the last-loaded payload so it can be re-applied to P every time decode() rebuilds it
 // (a plain refresh/rebuild replaces P entirely, which would otherwise drop the img field).
@@ -480,11 +500,25 @@ function decode(d){
       ref: ref || 0, lo: lo || 0, hi: hi || 0, ns: ns || 0, pd: pd || 0,
       size: size || '', unit: unit || '',
       img: '',   // filled in by applyImagesToP() once ?action=images has loaded, if ever
+      obs: [],   // per-store price observations for the \u0E2B\u0E21\u0E27\u0E14\u0E2B\u0E21\u0E39\u0E48 store filter \u2014 filled in below
       words: (brand + ' ' + item2 + ' ' + sku2 + ' ' + c3).toLowerCase().normalize('NFC')
         .split(/[^a-z0-9\u0E00-\u0E7F.+]+/).filter(Boolean)
     };
   });
   PBY_BC = new Map(P.map(p => [p.bc, p]));
+  // `o: [[pIdx, sIdx, price, flagIdx], ...]` \u2014 latest normal(0)/promo(1) price per (product, store).
+  // A payload cached from before `o` existed simply has no `o` array; HAS_OBS stays false and the
+  // \u0E2B\u0E21\u0E27\u0E14\u0E2B\u0E21\u0E39\u0E48 filter UI (see buildCat()) stays hidden, so the page behaves exactly as it did before.
+  // Built once per payload here \u2014 O(products)+O(observations) \u2014 rather than re-scanning `o` on
+  // every filter change, which is what keeps recompute responsive across 21k+ products.
+  HAS_OBS = Array.isArray(d.o);
+  if(HAS_OBS){
+    for(const row of d.o){
+      const p = P[row[0]];
+      if(p) p.obs.push({ s: row[1], price: row[2], flag: row[3] });
+    }
+  }
+  storesGen++;   // signals buildCat() that STORES is a fresh array \u2014 see catFilterStoresGen
 }
 
 /**
@@ -817,6 +851,94 @@ function chipRow(el, list, sel, all){
 }
 function counts(arr){ const m={}; arr.forEach(v=>{ if(v) m[v]=(m[v]||0)+1 });
   return Object.keys(m).sort((a,b)=>m[b]-m[a]); }
+
+/* ---- หมวดหมู่ store filter ----
+   Channel options are derived from STORES itself (never hard-coded) so an unused channel is not
+   offered and a new one appears on its own; counts() already drops blank values, so the blank
+   bucket is added back only when at least one store actually has one. */
+function channelOptions(){
+  const present = counts(STORES.map(s=>s.channel));
+  const hasBlank = STORES.some(s=>!s.channel);
+  return hasBlank ? present.concat(['__BLANK__']) : present;
+}
+function chanLabel(v){ return v==='__BLANK__' ? 'ไม่ระบุช่องทาง' : v; }
+// Stores are addressed by their STORES-array index (the same index `o` rows use as sIdx) rather
+// than store_id, so selection can be compared directly against observation rows with no lookup.
+function storesForChannel(chan){
+  const idxs = [];
+  STORES.forEach((s,i)=>{
+    if(chan==='__ALL__' || (chan==='__BLANK__' ? !s.channel : s.channel===chan)) idxs.push(i);
+  });
+  return idxs;
+}
+function catFilterActive(){ return !(catChanSel==='__ALL__' && catStoreSel==='__ALL__'); }
+function selectedStoreIdxSet(){
+  const pool = storesForChannel(catChanSel);
+  return new Set(catStoreSel==='__ALL__' ? pool : pool.filter(i=>catStoreSel.has(i)));
+}
+/**
+ * Recomputes ref/lo/hi/ns/pd for one product from its raw `o` observations, restricted to the
+ * selected stores — using EXACTLY the backend's definitions (see buildAnalysis() in code.gs) so a
+ * filtered and unfiltered view can never disagree. Returns null when the product has no NORMAL
+ * price among the selected stores, matching how the unfiltered path already treats ref===0 as
+ * "no price" (catItems().filter(p=>p.ref)) — a promo-only product is excluded the same way there.
+ */
+function computeFiltered(p, selSet){
+  let normals = [], minPromo = null;
+  for(const o of p.obs){
+    if(!selSet.has(o.s)) continue;
+    if(o.flag === 0) normals.push(o.price);
+    else if(o.flag === 1 && (minPromo===null || o.price<minPromo)) minPromo = o.price;
+  }
+  if(!normals.length) return null;
+  // round2 to match buildAnalysis() EXACTLY. Without it, selecting every store produced a
+  // median a few decimals off the precomputed one — 533.305 against 533.30 — so the same
+  // product showed two different "medians" depending on whether a filter happened to be on.
+  const ref = Math.round(med(normals) * 100) / 100;
+  const pd = (minPromo!==null && ref) ? Math.round((1 - minPromo/ref)*1000)/1000 : 0;
+  return { ref, lo: Math.min(...normals), hi: Math.max(...normals), ns: normals.length, pd };
+}
+/**
+ * With the filter on ทั้งหมด, reuse the precomputed backend numbers rather than recomputing —
+ * they are the same numbers by construction, and reusing them is what keeps the default view fast
+ * across 21k+ products. selSet is null exactly when the filter is inactive.
+ */
+function statFor(p, selSet){
+  if(!selSet) return p.ref ? { ref:p.ref, lo:p.lo, hi:p.hi, ns:p.ns, pd:p.pd } : null;
+  return computeFiltered(p, selSet);
+}
+function renderChanChips(){
+  const opts = channelOptions();
+  $("catChanChips").innerHTML = [['__ALL__','ทั้งหมด']].concat(opts.map(v=>[v, chanLabel(v)]))
+    .map(([v,lbl])=>`<button class="${catChanSel===v?'on':''}" data-val="${esc(v)}">${esc(lbl)}</button>`).join('');
+}
+function renderStoreChips(){
+  const pool = storesForChannel(catChanSel);
+  const btns = [`<button class="${catStoreSel==='__ALL__'?'on':''}" data-val="__ALL__">ทั้งหมด (${pool.length})</button>`]
+    .concat(pool.map(i=>{
+      const on = catStoreSel!=='__ALL__' && catStoreSel.has(i);
+      return `<button class="${on?'on':''}" data-val="${i}">${esc(STORES[i].name)}</button>`;
+    }));
+  $("catStoreChips").innerHTML = btns.join('');
+}
+function setCatChan(v){
+  catChanSel = v;
+  catStoreSel = '__ALL__';   // the store pool just changed; stale indices from the old channel must not linger
+  renderChanChips(); renderStoreChips(); renderCat();
+}
+function toggleCatStore(val){
+  if(val === '__ALL__'){ catStoreSel = '__ALL__'; }
+  else {
+    const i = Number(val);
+    const wasAll = catStoreSel === '__ALL__';
+    const cur = wasAll ? new Set([i]) : new Set(catStoreSel);
+    if(!wasAll){ if(cur.has(i)) cur.delete(i); else cur.add(i); }
+    // Emptying the selection reverts to "ทั้งหมด" rather than "nothing selected", which would
+    // zero out every stat instead of just widening the view back out.
+    catStoreSel = cur.size ? cur : '__ALL__';
+  }
+  renderStoreChips(); renderCat();
+}
 function buildCat(){
   const c1s = counts(P.map(p=>p.c1));
   if(!c1Sel || !c1s.includes(c1Sel)) c1Sel = c1s[0];
@@ -827,6 +949,14 @@ function buildCat(){
   const c3s = counts(P.filter(p=>p.c1===c1Sel && p.c2===c2Sel).map(p=>p.c3));
   if(c3Sel!=='__ALL__' && !c3s.includes(c3Sel)) c3Sel='__ALL__';
   chipRow($("c3Chips"), c3s, c3Sel, true);
+  // Reset the store filter exactly once per fresh STORES array (a new decode()), never on an
+  // ordinary category-chip click within the same payload — see storesGen/catFilterStoresGen.
+  if(catFilterStoresGen !== storesGen){
+    catChanSel = '__ALL__'; catStoreSel = '__ALL__';
+    catFilterStoresGen = storesGen;
+  }
+  $("catFilterPanel").classList.toggle('hidden', !HAS_OBS);
+  renderChanChips(); renderStoreChips();
   renderCat();
 }
 function setC1(v){ c1Sel=v; c2Sel=null; c3Sel='__ALL__'; buildCat(); }
@@ -837,12 +967,26 @@ function catItems(){
 }
 function renderCat(){
   const all = catItems();
-  const items = all.filter(p=>p.ref);
+  const filterActive = catFilterActive();
+  const selSet = filterActive ? selectedStoreIdxSet() : null;
+  // Merge each product's (precomputed or recomputed) ref/lo/hi/ns/pd on top of a shallow copy —
+  // every other renderer below (stats, histogram, brand table) reads p.ref/p.lo/... unchanged,
+  // so filtering plugs in here without touching the rendering logic itself. A product with no
+  // price under the current filter is excluded outright, never shown as ฿0.
+  const items = [];
+  for(const p of all){ const st = statFor(p, selSet); if(st) items.push(Object.assign({}, p, st)); }
   const label = c1Sel+' › '+c2Sel+(c3Sel!=='__ALL__'?' › '+c3Sel:'');
   catLabelCur = label;
   $("catTitle").textContent = label;
+  // Always visible, filtered or not — a filtered median that looks like the global one is the
+  // one mistake this filter must never allow.
+  const chanTxt = catChanSel==='__ALL__' ? 'ทั้งหมด' : chanLabel(catChanSel);
+  const storeN = selSet ? selSet.size : STORES.length;
+  catFilterLabelCur = `${chanTxt} · ${storeN.toLocaleString()} ร้าน`;
+  $("catFilterLabel").textContent = `หมวดหมู่ · ${catFilterLabelCur}`;
   if(!items.length){
-    $("catStats").innerHTML = `<div class="stat"><b>${all.length}</b><span>สินค้า (ยังไม่มีราคา)</span></div>`;
+    const msg = filterActive ? 'สินค้า (ไม่มีราคาในร้านที่เลือก)' : 'สินค้า (ยังไม่มีราคา)';
+    $("catStats").innerHTML = `<div class="stat"><b>${all.length}</b><span>${msg}</span></div>`;
     $("ladder").innerHTML=''; $("ladderX").innerHTML=''; $("catBrandRows").innerHTML=''; return;
   }
   const prices = items.map(p=>p.ref);
@@ -937,11 +1081,24 @@ function brandModalRowHtml(p){
   </tr>`;
 }
 let bmLastFocus = null;
+// Reuses the exact same filter state and statFor() as renderCat() — a modal showing all-store
+// prices while the table behind it is filtered to one channel would be worse than no filter.
+// Unlike the category table (which excludes no-price products outright), the modal still lists
+// every product in the brand/category — same as the unfiltered modal always has — with ref/lo/hi
+// falling back to 0/'—' for a product that has no price under the current filter, exactly how it
+// already shows 0/'—' today for a product with no price at all.
 function openBrandModal(brand){
-  const rows = sortBrandModalRows(catItems().filter(p=>p.brand===brand));
+  const filterActive = catFilterActive();
+  const selSet = filterActive ? selectedStoreIdxSet() : null;
+  const rows = sortBrandModalRows(
+    catItems().filter(p=>p.brand===brand).map(p=>{
+      const st = statFor(p, selSet) || { ref:0, lo:0, hi:0, ns:0, pd:0 };
+      return Object.assign({}, p, st);
+    })
+  );
   const shown = rows.slice(0, BM_CAP);
   $("bmBrand").textContent = brand;
-  $("bmMeta").textContent = `${catLabelCur} · ${rows.length.toLocaleString()} สินค้า`;
+  $("bmMeta").textContent = `${catLabelCur} · ${catFilterLabelCur} · ${rows.length.toLocaleString()} สินค้า`;
   $("bmRows").innerHTML = shown.map(brandModalRowHtml).join('');
   // Same "drop the thumb rather than show a broken-image icon" approach as the search grid.
   $("bmRows").querySelectorAll('.bm-thumb-img').forEach(im=>{
@@ -1045,6 +1202,8 @@ function initEvents(){
   $("c1Chips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setC1(b.dataset.val); });
   $("c2Chips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setC2(b.dataset.val); });
   $("c3Chips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setC3(b.dataset.val); });
+  $("catChanChips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setCatChan(b.dataset.val); });
+  $("catStoreChips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) toggleCatStore(b.dataset.val); });
   $("catBrandRows").addEventListener('click', e=>{ const r=e.target.closest('tr[data-brand]'); if(r) openBrandModal(r.dataset.brand); });
   $("catBrandHead").addEventListener('click', e=>{ const th=e.target.closest('th[data-key]'); if(th) setCatSort(th.dataset.key); });
 
