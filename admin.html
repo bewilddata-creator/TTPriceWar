@@ -82,10 +82,21 @@ table.gridtable tbody td{padding:3px 6px; border-bottom:1px solid var(--line)}
   font-weight:600; font-size:14.5px; border:1.5px solid transparent; border-radius:8px;
   background:transparent; color:var(--ink)}
 .cell-barcode:focus, .cell-price:focus{outline:none; border-color:var(--ink); background:var(--paper)}
-.cell-barcode.bad-check, .sel-barcode-out.bad-check{border-color:var(--warn); background:var(--warn-bg)}
+.cell-barcode.bad-check, .sel-barcode-out.bad-check, .cell-qty.bad-check{border-color:var(--warn); background:var(--warn-bg)}
 .cell-flag{width:100%; padding:8px 6px; border:1.5px solid transparent; border-radius:8px;
   font-size:12.5px; font-weight:600; background:transparent; color:var(--mut)}
 .cell-flag:focus{outline:none; border-color:var(--ink)}
+/* The ราคาส่ง quantity field lives INSIDE the ประเภท cell, only while that row's flag is
+   wholesale — a permanent quantity column would put a cell to skip past on every row for
+   something relevant to maybe one row in fifty. --ok green matches the phone's wholesale chip. */
+.flagwrap{display:flex; align-items:center; gap:4px}
+.flagwrap .cell-flag{flex:1; min-width:0}
+.cell-flag.wholesale-on{color:var(--ok); font-weight:700}
+.cell-qty{width:56px; flex:none; padding:8px 6px; font-family:'IBM Plex Mono',monospace;
+  font-size:12.5px; font-weight:600; border:1.5px solid var(--ok); border-radius:8px;
+  background:var(--ok-bg); color:var(--ink)}
+.cell-qty:focus{outline:none; border-color:var(--ok); background:#fff}
+.cell-qty::placeholder{color:var(--ok); opacity:.75}
 .prodcell{font-size:13.5px; color:var(--mut); white-space:nowrap; overflow:hidden;
   text-overflow:ellipsis; max-width:280px}
 .prodcell.found{color:var(--ink); font-weight:600}
@@ -326,6 +337,7 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
             <div><span class="lab">ไม่พบ</span><span class="val warn" id="statNotFound">0</span>
               <span class="stat-sub" id="statNotFoundDesc"></span></div>
             <div><span class="lab">เลขอาจผิด</span><span class="val warn" id="statBadCheck">0</span></div>
+            <div><span class="lab">ราคาส่ง</span><span class="val ok" id="statWholesale">0</span></div>
           </div>
         </div>
         <div class="sumblock">
@@ -673,6 +685,42 @@ function applyLookupResult(rowId, code, d){
   renderSummary();
 }
 
+/* ================= WHOLESALE QUANTITY (shared by both grids) =================
+   ราคาส่ง ("ซื้อ 12 ชิ้นขึ้นไป ชิ้นละ 45") needs a minimum-quantity number alongside it, but only
+   for the row that is actually flagged wholesale — everywhere else the ประเภท cell must look and
+   behave exactly as it always has. The qty input is created/removed on the fly rather than kept
+   as a permanent column, and its value is read straight from the DOM (like barcode/price already
+   are) rather than mirrored into a side Map, so switching the flag away naturally drops it. */
+function qtyInputHtml(qty){
+  return `<input type="text" class="cell-qty" inputmode="numeric" autocomplete="off"
+    placeholder="จำนวน" title="จำนวนขั้นต่ำ (ชิ้น) สำหรับราคาส่ง"
+    aria-label="จำนวนขั้นต่ำ (ชิ้น)" value="${esc(qty || '')}">`;
+}
+
+/** Inserts or removes the qty input next to a ประเภท <select> as its value changes, and toggles
+ *  the select's own green cue. `sel` is any .cell-flag — shared by the barcode grid and the
+ *  เลือกสินค้า grid, since both wrap their select in the same .flagwrap structure. */
+function syncFlagQty(sel){
+  const wrap = sel.closest('.flagwrap');
+  if (!wrap) return;
+  const wantsQty = sel.value === 'wholesale';
+  sel.classList.toggle('wholesale-on', wantsQty);
+  const existing = wrap.querySelector('.cell-qty');
+  if (wantsQty && !existing) wrap.insertAdjacentHTML('beforeend', qtyInputHtml(''));
+  else if (!wantsQty && existing) existing.remove();
+}
+
+/** Marks a wholesale row that has no positive quantity yet — before submit this is what a
+ *  bulk price with nothing to attach it to looks like, so the admin sees it on the grid rather
+ *  than only finding out from the submit status line afterwards. */
+function markQtyValidity(tr){
+  if (!tr) return;
+  const sel = tr.querySelector('.cell-flag');
+  const qtyEl = tr.querySelector('.cell-qty');
+  if (!sel || !qtyEl) return;
+  qtyEl.classList.toggle('bad-check', sel.value === 'wholesale' && !(Number(qtyEl.value.trim()) > 0));
+}
+
 /* ================= GRID =================
    A spreadsheet-like table. State lives in the DOM inputs themselves (read on demand via
    collectRows) plus a side map of per-row lookup results, since the primary job here is raw
@@ -689,12 +737,16 @@ function rowHtml(id, data = {}){
   const price = esc(data.price || '');
   const flag = data.flag || 'normal';
   const opt = (v, label) => `<option value="${v}"${flag === v ? ' selected' : ''}>${label}</option>`;
+  const flagOn = flag === 'wholesale' ? ' wholesale-on' : '';
   return `<tr data-row="${id}">
     <td><input type="text" class="cell-barcode" inputmode="numeric" autocomplete="off" value="${barcode}"></td>
     <td><input type="text" class="cell-price" inputmode="decimal" autocomplete="off" value="${price}"></td>
-    <td><select class="cell-flag">
-      ${opt('normal', 'ปกติ')}${opt('promo', 'โปรฯ')}${opt('short_shelf_life', 'ใกล้หมดอายุ')}
-    </select></td>
+    <td><div class="flagwrap">
+      <select class="cell-flag${flagOn}">
+        ${opt('normal', 'ปกติ')}${opt('promo', 'โปรฯ')}${opt('short_shelf_life', 'ใกล้หมดอายุ')}${opt('wholesale', 'ราคาส่ง')}
+      </select>
+      ${flag === 'wholesale' ? qtyInputHtml(data.qty) : ''}
+    </div></td>
     <td class="prodcell">—</td>
     <td><button type="button" class="rm-row" tabindex="-1" title="ลบแถว" data-rm="${id}">×</button></td>
   </tr>`;
@@ -709,6 +761,7 @@ function addRow(data = {}, focus = true){
   $('gridBody').insertAdjacentHTML('beforeend', rowHtml(id, data));
   rowMeta.set(id, { checked: false, product: null, notFound: false, offline: false });
   rowDesc.set(id, data.desc || '');
+  markQtyValidity(rowEl(id));
   if (data.barcode) { updateBarcodeValidity(id); setProductSearching(id); queueLookup(id, data.barcode); }
   if (focus) focusCell(id, 'barcode');
   return id;
@@ -798,11 +851,13 @@ function advanceAfterPrice(id){
 function collectRows(){
   return allRowIds().map(id => {
     const tr = rowEl(id);
+    const qtyEl = tr.querySelector('.cell-qty');   // present only while flag === 'wholesale'
     return {
       id,
       barcode: tr.querySelector('.cell-barcode').value.trim(),
       price: tr.querySelector('.cell-price').value.trim(),
       flag: tr.querySelector('.cell-flag').value,
+      qty: qtyEl ? qtyEl.value.trim() : '',
       desc: rowDesc.get(id) || ''
     };
   });
@@ -890,9 +945,12 @@ function selRowHtml(id, data = {}){
       <div class="combo-list hidden sel-sku-drop"></div>
     </td>
     <td><input type="text" class="cell-price sel-price" inputmode="decimal" autocomplete="off" value="${price}"></td>
-    <td><select class="cell-flag sel-flag">
-      ${opt('normal', 'ปกติ')}${opt('promo', 'โปรฯ')}${opt('short_shelf_life', 'ใกล้หมดอายุ')}
-    </select></td>
+    <td><div class="flagwrap">
+      <select class="cell-flag sel-flag${flag === 'wholesale' ? ' wholesale-on' : ''}">
+        ${opt('normal', 'ปกติ')}${opt('promo', 'โปรฯ')}${opt('short_shelf_life', 'ใกล้หมดอายุ')}${opt('wholesale', 'ราคาส่ง')}
+      </select>
+      ${flag === 'wholesale' ? qtyInputHtml(data.qty) : ''}
+    </div></td>
     <td><input type="text" class="sel-barcode-out" readonly tabindex="-1" value="${esc(data.barcode || '')}"></td>
     <td><button type="button" class="rm-row" tabindex="-1" title="ลบแถว" data-rm-sel="${id}">×</button></td>
   </tr>`;
@@ -911,6 +969,7 @@ function addSelRow(data = {}, focus = true){
   selRowMeta.set(id, { brand: data.brand || '', products: null, resolved: null,
     barcode: data.barcode || '', ambiguous: false, fetchToken: 0 });
   renderSelBarcode(id);
+  markQtyValidity(selRowEl(id));
   if (data.brand) fetchBrandProducts(id, data.brand);   // draft restore: re-fetch so item/sku pickers work
   if (focus) focusSelCell(id, 'brand');
   return id;
@@ -1070,6 +1129,7 @@ function collectSelRows(){
   return allSelRowIds().map(id => {
     const tr = selRowEl(id);
     const meta = selRowMeta.get(id) || {};
+    const qtyEl = tr.querySelector('.cell-qty');   // present only while flag === 'wholesale'
     return {
       id,
       brand: tr.querySelector('.sel-brand').value.trim(),
@@ -1077,6 +1137,7 @@ function collectSelRows(){
       sku: tr.querySelector('.sel-sku').value.trim(),
       price: tr.querySelector('.sel-price').value.trim(),
       flag: tr.querySelector('.sel-flag').value,
+      qty: qtyEl ? qtyEl.value.trim() : '',
       barcode: meta.barcode || ''   // '' whenever brand/item/sku do not resolve to exactly one product
     };
   });
@@ -1085,7 +1146,8 @@ function collectSelRows(){
 /* ================= SUMMARY (right pane) ================= */
 function renderSummary(){
   const rows = allRowIds()
-    .map(id => ({ id, barcode: rowEl(id).querySelector('.cell-barcode').value.trim(), meta: rowMeta.get(id) || {} }))
+    .map(id => ({ id, barcode: rowEl(id).querySelector('.cell-barcode').value.trim(),
+      flag: rowEl(id).querySelector('.cell-flag').value, meta: rowMeta.get(id) || {} }))
     .filter(r => r.barcode);   // the always-present trailing blank row is not a real entry
 
   const total = rows.length;
@@ -1094,12 +1156,14 @@ function renderSummary(){
   const notFound = notFoundRows.length;
   const notFoundDesc = notFoundRows.filter(r => (rowDesc.get(r.id) || '').trim()).length;
   const badCheck = rows.filter(r => !isValidBarcode(r.barcode)).length;
+  const wholesale = rows.filter(r => r.flag === 'wholesale').length;
 
   $('statTotal').textContent = String(total);
   $('statResolved').textContent = String(resolved);
   $('statNotFound').textContent = String(notFound);
   $('statNotFoundDesc').textContent = notFoundDesc ? `${notFoundDesc} มีชื่อแล้ว` : '';
   $('statBadCheck').textContent = String(badCheck);
+  $('statWholesale').textContent = String(wholesale);
 
   const unresolved = rows.filter(r => r.meta.notFound || !isValidBarcode(r.barcode));
   const box = $('unresolvedList');
@@ -1115,8 +1179,13 @@ function renderSummary(){
   }
 }
 
+/** A wholesale row with no positive quantity is not submittable, same as a missing price —
+ *  keeps the "(N รายการ)" count on the submit button, and its enabled state, honest about what
+ *  submitBatch will actually send. */
+function qtyOk(r){ return r.flag !== 'wholesale' || Number(r.qty) > 0; }
+
 function updateSubmitButton(){
-  const isValid = r => r.barcode && priceValue(r.price) !== null;
+  const isValid = r => r.barcode && priceValue(r.price) !== null && qtyOk(r);
   const valid = collectRows().filter(isValid).length + collectSelRows().filter(isValid).length;
   $('submitBtn').textContent = `บันทึกทั้งหมด (${valid} รายการ)`;
   $('submitBtn').disabled = !valid || !S.storeId;
@@ -1126,11 +1195,13 @@ function updateSubmitButton(){
    The whole batch — store, date, mode, every row — is saved on every change. Losing 40 typed
    rows to an accidentally-closed tab is not an acceptable failure mode for this tool. */
 function saveDraft(){
-  const rows = collectRows().map(r => ({ barcode: r.barcode, price: r.price, flag: r.flag, desc: r.desc }));
+  // qty rides along with flag on every row — losing a typed minimum quantity on an accidentally
+  // closed tab is the same class of loss as losing a price.
+  const rows = collectRows().map(r => ({ barcode: r.barcode, price: r.price, flag: r.flag, qty: r.qty, desc: r.desc }));
   // selRows carries brand/item/sku too — not just the resolved barcode — so a row the admin
   // was still narrowing (not yet resolved) is not silently lost on reload.
   const selRows = collectSelRows().map(r => ({ brand: r.brand, item: r.item, sku: r.sku,
-    barcode: r.barcode, price: r.price, flag: r.flag }));
+    barcode: r.barcode, price: r.price, flag: r.flag, qty: r.qty }));
   ls.set('ps_admin_draft', {
     storeId: S.storeId, storeName: S.store, date: $('dateInput').value, mode: S.mode, rows, selRows
   });
@@ -1207,17 +1278,30 @@ async function submitBatch(){
   const dateVal = $('dateInput').value;
   if (!dateVal) { toast('ยังไม่ได้เลือกวันที่', true); return; }
 
+  // Mark every wholesale-without-quantity row before the submit attempt, not just after — the
+  // admin should see which rows will be dropped instead of discovering it in the status line.
+  [...$('gridBody').querySelectorAll('tr'), ...$('selGridBody').querySelectorAll('tr')]
+    .forEach(markQtyValidity);
+
   const ts = visitISO(dateVal);
   const items = [];
   let skipped = 0;
+  let skippedQty = 0;   // subset of `skipped`: real barcode+price, but ราคาส่ง with no minimum qty
   // Barcode-mode and select-mode rows end up as identical observation records — same shape,
   // same source — so both grids feed the same push, rather than two separate submit paths.
   const pushRow = (r, desc) => {
     const pv = priceValue(r.price);
     if (!r.barcode || pv === null) { skipped++; return; }
+    // A ราคาส่ง row with no positive minimum quantity is meaningless once it's in the Sheet
+    // ("ซื้อ ? ชิ้นขึ้นไป ชิ้นละ 45" — buys what?) — skip writing it rather than store junk, but
+    // it still had a real barcode+price typed in, so keepOnlyFailedRows below must not lose it.
+    if (r.flag === 'wholesale' && !(Number(r.qty) > 0)) { skipped++; skippedQty++; return; }
     items.push(buildObs({
       obsId: makeId('O'), ts, storeId: S.storeId,
       barcode: r.barcode, price: pv, flag: r.flag, by: DEVICE, source: 'manual',
+      // Just passed through — buildObs itself only attaches min_qty when flag is "wholesale" AND
+      // this is a positive number, which pushRow already guarantees by this point.
+      minQty: r.qty,
       // Always sent — same rule as index.html's saveObservation(). The backend creates a
       // Products row ONLY when the barcode is genuinely unknown, so an observation can never
       // point at a product that doesn't exist and silently vanish from buildAnalysis(). For
@@ -1232,7 +1316,16 @@ async function submitBatch(){
   collectRows().forEach(r => pushRow(r, r.desc));
   collectSelRows().forEach(r => pushRow(r, ''));
 
-  if (!items.length) { toast('ไม่มีรายการที่บันทึกได้', true); return; }
+  if (!items.length) {
+    // Distinguish "nothing typed" from "typed, but every ราคาส่ง row is missing its quantity" —
+    // the second case has real work sitting on the grid that the admin needs to go fix.
+    const msg = skippedQty
+      ? `ข้าม ${skippedQty} แถว (ราคาส่งไม่มีจำนวนขั้นต่ำ) — ไม่มีรายการอื่นที่บันทึกได้`
+      : 'ไม่มีรายการที่บันทึกได้';
+    setSubmitStatus(msg, true);
+    toast(msg, true);
+    return;
+  }
 
   submitting = true;
   $('submitBtn').disabled = true;
@@ -1259,14 +1352,26 @@ async function submitBatch(){
   // and does not exist on the grid rows themselves.
   const confirmedKeys = new Set(items.filter(it => ok.has(it.obs_id))
                                      .map(it => String(it.barcode) + '|' + it.price));
-  const skipMsg = skipped ? ` · ข้ามไป ${skipped} แถว (ว่างหรือไม่มีราคา)` : '';
+  const blankSkipped = skipped - skippedQty;
+  const qtyMsg = skippedQty ? ` · ข้าม ${skippedQty} แถว (ราคาส่งไม่มีจำนวนขั้นต่ำ)` : '';
+  const skipMsg = (blankSkipped ? ` · ข้ามไป ${blankSkipped} แถว (ว่างหรือไม่มีราคา)` : '') + qtyMsg;
 
   if (failed.length) {
     // Never clear rows the server did not confirm. Silently dropping typed work because the
     // response "looked" successful is the worst outcome this page can produce.
     keepOnlyFailedRows(confirmedKeys);
-    setSubmitStatus(`บันทึก ${ok.size} รายการ · ${failed.length} แถวไม่สำเร็จ ยังอยู่ในตาราง`, true);
+    setSubmitStatus(`บันทึก ${ok.size} รายการ · ${failed.length} แถวไม่สำเร็จ ยังอยู่ในตาราง${qtyMsg}`, true);
     toast(`${failed.length} แถวไม่สำเร็จ`, true);
+    updateSubmitButton();
+    return;
+  }
+
+  if (skippedQty) {
+    // These rows had a real barcode+price typed in — only the quantity is missing — so they
+    // stay on the grid for the admin to fix, same treatment as a row the server failed to write.
+    keepOnlyFailedRows(confirmedKeys);
+    setSubmitStatus(`บันทึกสำเร็จ ${ok.size} รายการ${skipMsg}`, true);
+    toast(`ข้าม ${skippedQty} แถว (ราคาส่งไม่มีจำนวนขั้นต่ำ)`, true);
     updateSubmitButton();
     return;
   }
@@ -2098,11 +2203,18 @@ $('gridBody').addEventListener('input', e => {
     const tr = t.closest('tr');
     if (tr) rowDesc.set(Number(tr.dataset.row), t.value);
     renderSummary();
+  } else if (t.classList.contains('cell-qty')) {
+    markQtyValidity(t.closest('tr'));
+    updateSubmitButton();
   }
   scheduleDraftSave();
 });
 $('gridBody').addEventListener('change', e => {
-  if (e.target.classList.contains('cell-flag')) saveDraft();
+  if (e.target.classList.contains('cell-flag')) {
+    syncFlagQty(e.target);
+    markQtyValidity(e.target.closest('tr'));
+    renderSummary(); updateSubmitButton(); saveDraft();
+  }
 });
 $('gridBody').addEventListener('click', e => {
   const btn = e.target.closest('.rm-row');
@@ -2146,6 +2258,7 @@ $('selGridBody').addEventListener('input', e => {
   else if (t.classList.contains('sel-item')) renderSelItemDrop(id);
   else if (t.classList.contains('sel-sku')) renderSelSkuDrop(id);
   else if (t.classList.contains('sel-price')) updateSubmitButton();
+  else if (t.classList.contains('cell-qty')) { markQtyValidity(tr); updateSubmitButton(); }
   scheduleDraftSave();
 });
 // focus does not bubble — must be captured — so the dropdown reopens when tabbing back into a field.
@@ -2157,7 +2270,11 @@ $('selGridBody').addEventListener('focus', e => {
   else if (t.classList.contains('sel-sku')) renderSelSkuDrop(id);
 }, true);
 $('selGridBody').addEventListener('change', e => {
-  if (e.target.classList.contains('sel-flag')) saveDraft();
+  if (e.target.classList.contains('sel-flag')) {
+    syncFlagQty(e.target);
+    markQtyValidity(e.target.closest('tr'));
+    renderSummary(); updateSubmitButton(); saveDraft();
+  }
 });
 $('selGridBody').addEventListener('click', e => {
   const btn = e.target.closest('.rm-row');
