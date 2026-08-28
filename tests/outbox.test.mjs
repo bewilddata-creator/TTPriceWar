@@ -71,3 +71,21 @@ test("the outbox survives a JSON round trip", () => {
   const ob = outboxAdd([], buildObs(base), 1000);
   assert.deepEqual(JSON.parse(JSON.stringify(ob)), ob);
 });
+
+test("a wholesale row carries its minimum quantity", () => {
+  const rec = buildObs({ ...base, flag: "wholesale", minQty: 12 });
+  assert.equal(rec.flag, "wholesale");
+  assert.equal(rec.min_qty, 12);
+});
+
+test("min_qty is omitted on non-wholesale rows, not sent as zero", () => {
+  // A retail row carrying min_qty:0 would read as "bulk price, minimum one piece".
+  assert.equal("min_qty" in buildObs({ ...base, minQty: 12 }), false);
+  assert.equal("min_qty" in buildObs(base), false);
+});
+
+test("a wholesale row with no usable quantity omits the field", () => {
+  assert.equal("min_qty" in buildObs({ ...base, flag: "wholesale" }), false);
+  assert.equal("min_qty" in buildObs({ ...base, flag: "wholesale", minQty: 0 }), false);
+  assert.equal("min_qty" in buildObs({ ...base, flag: "wholesale", minQty: "abc" }), false);
+});

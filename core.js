@@ -51,13 +51,22 @@ export function shouldAcceptScan(last, code, now, windowMs = SCAN_WINDOW_MS) {
  *  worth of rows is not still sitting on the phone when the trip ends. */
 export const UNDO_MS = 15000;
 
-/** Build the exact observation record the Apps Script backend expects. */
+export const FLAGS = ["normal", "promo", "short_shelf_life", "wholesale"];
+
+/**
+ * Build the exact observation record the Apps Script backend expects.
+ *
+ * `minQty` only travels with a `wholesale` row — a shop's bulk price is meaningless without
+ * the quantity that unlocks it. It is deliberately omitted otherwise rather than sent as 0,
+ * so a retail row can never be mistaken for a wholesale offer of one piece.
+ */
 export function buildObs({ obsId, ts, storeId, barcode, price, flag,
-                           by, source = "scan", newStore, newProduct }) {
+                           by, source = "scan", minQty, newStore, newProduct }) {
   const rec = {
     type: "obs", obs_id: obsId, ts, store_id: storeId,
     barcode: String(barcode), price, flag, source, by
   };
+  if (flag === "wholesale" && Number(minQty) > 0) rec.min_qty = Number(minQty);
   if (newStore) rec.new_store = newStore;
   if (newProduct) rec.new_product = newProduct;
   return rec;
