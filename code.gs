@@ -1,5 +1,5 @@
 /**
- * PRICE SCOUT — backend v12
+ * PRICE SCOUT — backend v13
  *
  * Serves three static pages from one Sheet: index.html (phone capture), admin.html (desk
  * entry + product/store admin), viewer.html (analysis).
@@ -119,7 +119,7 @@ function doGet(e) {
   if (action === "vocab") return vocab();
   if (action === "needsinfo") return needsInfo(e.parameter.limit);
   if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
-  return json({ ok: true, msg: "Price Scout API v12" });
+  return json({ ok: true, msg: "Price Scout API v13" });
 }
 
 /** Every form a barcode may appear in, since the Sheet stores them as numbers. */
@@ -386,6 +386,7 @@ function buildAnalysis() {
   const pLast = ps.getLastRow();
   const base = [];
   const imgs = [];         // index-aligned with base[]; written to its own file
+  const sizes = [];        // [size, unit] per product, appended to each row below
   const pIdxByNorm = {};   // normBarcode(barcode) -> index into base[] / the final row array
   if (pLast > 1) {
     const v = ps.getRange(2, 1, pLast - 1, 12).getValues();
@@ -394,6 +395,7 @@ function buildAnalysis() {
       pIdxByNorm[normBarcode(bc)] = base.length;
       base.push([bc, B.idx(r[1]), r[2] || "", r[3] || "",
         C1.idx(r[6]), C2.idx(r[7]), C3.idx(r[8]), r[11] === "YES" ? 1 : 0]);
+      sizes.push([r[4] === "" || r[4] == null ? "" : r[4], r[5] || ""]);
       imgs.push(String(r[9] || "").replace(CDN_PREFIX, "~"));
     });
   }
@@ -450,7 +452,9 @@ function buildAnalysis() {
         pd = Math.round((1 - Math.min.apply(null, promos) / ref) * 1000) / 1000;
       }
     }
-    return row.concat([ref, lo, hi, ns, pd]);
+    // size/unit go LAST so indices 0..12 keep their meaning for any page still running the
+    // previous build — it destructures the first 13 and ignores what follows.
+    return row.concat([ref, lo, hi, ns, pd, sizes[i][0], sizes[i][1]]);
   });
 
   // ---- Stores: store_id, name, region, channel ----
@@ -574,42 +578,67 @@ function doPost(e) {
 }
 
 /**
- * Lookups read once per request, not once per record.
+ * Per-request lookups, computed LAZILY.
  *
- * Retry detection is cache-first: scanning "the last N rows" would assume Observations is
- * still in insertion order, and a sorted tab would then hide a retry and admit a duplicate.
- * The row scan below is only a fallback for a cache eviction.
+ * Everything below costs a full-column read of a 20k+ row tab, and most requests need none of
+ * it: an updateProduct was paying for every product barcode AND every seq value before doing a
+ * single-cell write, which is why saving one row took 6-8 seconds. Each accessor reads on
+ * first use and caches on the context, so a batch still reads once while a lone edit reads
+ * nothing at all.
  */
 function newWriteContext(ss) {
-  const cache = CacheService.getScriptCache();
-  const os = ss.getSheetByName("Observations");
+  return { ss: ss, cache: CacheService.getScriptCache(),
+           _recentIds: null, _codes: null, _stores: null, _nextSeq: null };
+}
+
+/** obs_ids near the end of the tab — a fallback for cache eviction, nothing more. */
+function ctxRecentIds(ctx) {
+  if (ctx._recentIds) return ctx._recentIds;
+  const os = ctx.ss.getSheetByName("Observations");
   const last = os.getLastRow();
   const from = Math.max(2, last - RECENT_OBS_WINDOW);
-  const recentIds = last > 1
+  ctx._recentIds = last > 1
     ? os.getRange(from, 1, last - from + 1, 1).getValues().flat().map(String)
     : [];
+  return ctx._recentIds;
+}
 
-  const ps = ss.getSheetByName("Products");
+/** Every known barcode, normalised — only needed when a record might create a product. */
+function ctxCodes(ctx) {
+  if (ctx._codes) return ctx._codes;
+  const ps = ctx.ss.getSheetByName("Products");
   const codes = {};
   if (ps.getLastRow() > 1) {
     ps.getRange(2, 1, ps.getLastRow() - 1, 1).getValues()
       .forEach(function (r) { if (r[0] !== "" && r[0] != null) codes[normBarcode(r[0])] = true; });
   }
+  ctx._codes = codes;
+  return codes;
+}
 
-  const sh = ss.getSheetByName("Stores");
-  const srows = sh.getLastRow() > 1
+/** Store ids and their comparison keys, index-aligned. */
+function ctxStores(ctx) {
+  if (ctx._stores) return ctx._stores;
+  const sh = ctx.ss.getSheetByName("Stores");
+  const rows = sh.getLastRow() > 1
     ? sh.getRange(2, 1, sh.getLastRow() - 1, 2).getValues() : [];
-  const storeIds  = srows.map(function (r) { return String(r[0]); });
-  const storeKeys = srows.map(function (r) { return storeKey(r[1]); });
+  ctx._stores = {
+    ids:  rows.map(function (r) { return String(r[0]); }),
+    keys: rows.map(function (r) { return storeKey(r[1]); })
+  };
+  return ctx._stores;
+}
 
-  return { cache: cache, recentIds: recentIds, codes: codes, storeIds: storeIds,
-           storeKeys: storeKeys, nextSeq: maxSeq(ps) + 1 };
+/** Next seq for an appended product. Read once, then incremented in memory. */
+function ctxNextSeq(ctx) {
+  if (ctx._nextSeq === null) ctx._nextSeq = maxSeq(ctx.ss.getSheetByName("Products")) + 1;
+  return ctx._nextSeq++;
 }
 
 /** True when this obs_id has already been written. Cache first, row scan as a fallback. */
 function alreadyWritten(ctx, id) {
   if (ctx.cache.get("obs:" + id)) return true;
-  return ctx.recentIds.indexOf(id) >= 0;
+  return ctxRecentIds(ctx).indexOf(id) >= 0;
 }
 
 function writeOne(ss, d, ctx) {
@@ -620,21 +649,23 @@ function writeOne(ss, d, ctx) {
   // store_id does not resolve is dropped from analysis silently. Hand back the canonical id.
   let canonicalStore = "";
   if (d.new_store && d.new_store.store_id && d.new_store.store) {
-    const at = ctx.storeKeys.indexOf(storeKey(d.new_store.store));
+    const sm = ctxStores(ctx);
+    const at = sm.keys.indexOf(storeKey(d.new_store.store));
     if (at < 0) {
       ss.getSheetByName("Stores")
         .appendRow([d.new_store.store_id, d.new_store.store, "", "", "created from app"]);
-      ctx.storeKeys.push(storeKey(d.new_store.store));
-      ctx.storeIds.push(d.new_store.store_id);
+      sm.keys.push(storeKey(d.new_store.store));
+      sm.ids.push(d.new_store.store_id);
     } else {
-      canonicalStore = ctx.storeIds[at] || "";
+      canonicalStore = sm.ids[at] || "";
       if (canonicalStore && canonicalStore !== d.new_store.store_id) d.store_id = canonicalStore;
     }
   }
 
   if (d.new_product && d.barcode) {
     const key = normBarcode(d.barcode);          // zero-padded UPC-A no longer duplicates
-    if (!ctx.codes[key]) {
+    const codes = ctxCodes(ctx);
+    if (!codes[key]) {
       let img = "";
       if (d.new_product.photo) img = savePhoto(d.new_product.photo, "prod_" + key);
       const np = d.new_product;
@@ -644,8 +675,8 @@ function writeOne(ss, d, ctx) {
       // flag is the admin's explicit "I finished this" signal, and nothing else should set it.
       ss.getSheetByName("Products").appendRow(["'" + String(d.barcode), np.brand || "",
         np.item || "", np.sku || "", "", "", "", "", "", img,
-        "field_scan", "YES", ts, "", ctx.nextSeq++]);
-      ctx.codes[key] = true;
+        "field_scan", "YES", ts, "", ctxNextSeq(ctx)]);
+      codes[key] = true;
     }
   }
 
@@ -655,7 +686,7 @@ function writeOne(ss, d, ctx) {
     ss.getSheetByName("Observations").appendRow([id, ts, d.store_id || "",
       "'" + String(d.barcode || ""), d.price, d.flag || "normal",
       d.source || "scan", d.by || ""]);
-    ctx.recentIds.push(id);
+    ctxRecentIds(ctx).push(id);
     ctx.cache.put("obs:" + id, "1", OBS_CACHE_SEC);
     return { id: id, status: "written", store_id: canonicalStore || undefined };
   }
@@ -757,21 +788,22 @@ function createStore(ss, d, ctx) {
   if (!name) return { id: "", status: "invalid" };
 
   const key = storeKey(name);
-  const at = ctx.storeKeys.indexOf(key);
-  if (at >= 0) return { id: ctx.storeIds[at] || "", status: "exists" };
+  const sm = ctxStores(ctx);
+  const at = sm.keys.indexOf(key);
+  if (at >= 0) return { id: sm.ids[at] || "", status: "exists" };
 
   // A caller-supplied id that already belongs to a DIFFERENT shop is refused, not written:
   // two rows sharing one store_id means only one survives the id->store map, so the other
   // shop's observations vanish from analysis with no error anywhere.
   let id = String(d.store_id || "").trim();
-  if (!id || ctx.storeIds.indexOf(id) >= 0) {
-    do { id = genStoreId(); } while (ctx.storeIds.indexOf(id) >= 0);
+  if (!id || sm.ids.indexOf(id) >= 0) {
+    do { id = genStoreId(); } while (sm.ids.indexOf(id) >= 0);
   }
 
   ss.getSheetByName("Stores").appendRow([id, name, d.region || "", d.channel || "",
     d.notes || "created from admin"]);
-  ctx.storeKeys.push(key);
-  ctx.storeIds.push(id);
+  sm.keys.push(key);
+  sm.ids.push(id);
   return { id: id, status: "created" };
 }
 
