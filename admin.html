@@ -220,8 +220,22 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
   font-weight:700; font-size:14px}
 #smSaveBtn:disabled{opacity:.35; cursor:default}
 
+/* ---- ทุนส่ง (competitor cost intel) ---- */
+.ts-warnbar{background:var(--warn-bg); border:1.5px solid var(--warn); border-radius:var(--r);
+  padding:12px 16px; color:var(--warn); font-weight:700; font-size:13.5px}
+.ts-layout{display:grid; grid-template-columns:minmax(320px,420px) 1fr; gap:16px; align-items:start}
+.ts-form{display:flex; flex-direction:column; gap:14px; margin-top:6px}
+.ts-source-other{margin-top:8px}
+.ts-submitbar{display:flex; align-items:center; justify-content:space-between; gap:16px}
+#tsStatusText{font-size:13.5px; color:var(--mut)}
+#tsStatusText.err{color:var(--warn); font-weight:600}
+#tsSubmitBtn{background:var(--ink); color:#fff; padding:13px 24px; border-radius:12px;
+  font-weight:700; font-size:15px}
+#tsSubmitBtn:disabled{opacity:.35; cursor:default}
+
 @media (max-width:900px){
   .rv-layout{grid-template-columns:1fr}
+  .ts-layout{grid-template-columns:1fr}
 }
 </style>
 </head>
@@ -233,6 +247,7 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
     <button class="toptab on" id="tabEntry">ป้อนราคา</button>
     <button class="toptab" id="tabReview">เติมข้อมูลสินค้า</button>
     <button class="toptab" id="tabStores">จัดการร้าน</button>
+    <button class="toptab" id="tabTunsong">ทุนส่ง</button>
   </nav>
 </header>
 
@@ -380,6 +395,89 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
         </thead>
         <tbody id="storesBody"><tr><td colspan="6" class="empty-note">กำลังโหลด…</td></tr></tbody>
       </table>
+    </div>
+  </section>
+
+  <section id="tunsongScreen" class="hidden">
+    <div class="ts-warnbar">ข้อมูลลับภายใน — ห้ามเปิดเผยนอกบริษัท</div>
+
+    <div class="ts-layout">
+      <div class="card">
+        <div class="eyebrow">บันทึกทุนส่ง</div>
+        <div class="ts-form" id="tsForm">
+          <div class="field">
+            <label class="eyebrow" for="tsProductInput">สินค้า</label>
+            <div class="combo">
+              <input type="text" id="tsProductInput" class="tin" placeholder="พิมพ์ยี่ห้อ / ชื่อสินค้า / บาร์โค้ด…"
+                     autocomplete="off" autocorrect="off" spellcheck="false">
+              <div class="combo-list hidden" id="tsProductDrop"></div>
+            </div>
+          </div>
+          <div class="field">
+            <label class="eyebrow" for="tsStoreInput">ร้าน</label>
+            <div class="combo">
+              <input type="text" id="tsStoreInput" class="tin" placeholder="พิมพ์ชื่อร้าน…"
+                     autocomplete="off" autocorrect="off" spellcheck="false">
+              <div class="combo-list hidden" id="tsStoreDrop"></div>
+            </div>
+          </div>
+          <div class="field">
+            <label class="eyebrow" for="tsDateInput">วันที่</label>
+            <input type="date" id="tsDateInput" class="tin">
+          </div>
+          <div class="field">
+            <label class="eyebrow" for="tsPriceInput">ราคาทุนส่ง</label>
+            <input type="text" id="tsPriceInput" class="tin" inputmode="decimal" autocomplete="off" placeholder="0.00">
+          </div>
+          <div class="field">
+            <label class="eyebrow" for="tsSourceSelect">แหล่งข้อมูล</label>
+            <select id="tsSourceSelect" class="tin">
+              <option value="">— เลือกแหล่งข้อมูล —</option>
+              <option value="เจ้าของร้านบอก">เจ้าของร้านบอก</option>
+              <option value="พนักงานขาย">พนักงานขาย</option>
+              <option value="เห็นใบส่งของ">เห็นใบส่งของ</option>
+              <option value="other">อื่นๆ</option>
+            </select>
+            <input type="text" id="tsSourceOther" class="tin ts-source-other hidden"
+                   placeholder="ระบุแหล่งข้อมูล…" autocomplete="off" autocorrect="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <span class="eyebrow">ความมั่นใจ</span>
+            <div class="segmented" id="tsConfidence">
+              <button type="button" data-conf="high">สูง</button>
+              <button type="button" data-conf="medium">กลาง</button>
+              <button type="button" data-conf="low">ต่ำ</button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="eyebrow" for="tsNotesInput">หมายเหตุ</label>
+            <textarea id="tsNotesInput" class="tin" rows="2"></textarea>
+          </div>
+          <div class="ts-submitbar">
+            <div id="tsStatusText">พร้อมใช้งาน</div>
+            <button type="button" id="tsSubmitBtn" disabled>บันทึกทุนส่ง</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="gridhead">
+          <div class="eyebrow" style="margin:0">รายการล่าสุด</div>
+          <button type="button" class="linkbtn" id="tsReloadBtn">โหลดใหม่</button>
+        </div>
+        <div class="gridscroll">
+          <table id="tsListTable" class="gridtable">
+            <colgroup>
+              <col style="width:100px"><col style="width:160px"><col>
+              <col style="width:90px"><col style="width:140px"><col style="width:70px">
+            </colgroup>
+            <thead>
+              <tr><th>วันที่</th><th>ร้าน</th><th>สินค้า</th><th>ราคา</th><th>แหล่งข้อมูล</th><th>มั่นใจ</th></tr>
+            </thead>
+            <tbody id="tsListBody"><tr><td colspan="6" class="empty-note">ยังไม่ได้โหลด</td></tr></tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -1699,6 +1797,236 @@ async function saveStoreModal(){
   highlightStoreRow(r.id);
 }
 
+/* ================= ทุนส่ง (competitor cost intel) =================
+   What a shop PAID a brand for a product, learned by talking to shop owners — the most
+   commercially sensitive data in this system. A single number per entry (no tiers, no min
+   qty) but it always carries a source and a confidence level, since it is hearsay of varying
+   reliability. Deliberately kept OUT of ps_admin_draft (see saveDraft above): a shared desktop
+   should not keep this in browser storage after the page closes.
+   The product combo can only resolve to a product already in the master (via psearch) — there
+   is no way to invent one here, same rule as the barcode grid's "no barcode -> no product". The
+   store combo reuses S.stores (loaded once for Tab 1) and rankStores, but keeps its own
+   selection so switching tabs never disturbs Tab 1's in-progress store/date. */
+const TS = {
+  storeId: null, storeName: '',
+  productResults: [], productPicked: null, searchToken: 0,
+  confidence: '', submitting: false,
+  entries: [], listLoaded: false, listLoading: false, listError: ''
+};
+const TS_FIELD_ORDER = ['product', 'store', 'date', 'price', 'source', 'confidence', 'notes'];
+let tsSearchTimer;
+
+function tsProductLabel(p){ return [p.brand, p.item, p.sku].filter(Boolean).join(' ') || String(p.barcode); }
+function confLabel(v){ return { high: 'สูง', medium: 'กลาง', low: 'ต่ำ' }[v] || v || '—'; }
+
+function tsFieldEl(key){
+  if (key === 'product') return $('tsProductInput');
+  if (key === 'store') return $('tsStoreInput');
+  if (key === 'date') return $('tsDateInput');
+  if (key === 'price') return $('tsPriceInput');
+  if (key === 'source') return $('tsSourceSelect');
+  if (key === 'confidence') return $('tsConfidence').querySelector('button.on') || $('tsConfidence').querySelector('button');
+  if (key === 'notes') return $('tsNotesInput');
+  return null;
+}
+function tsFocusNext(fromKey){
+  const el = tsFieldEl(TS_FIELD_ORDER[TS_FIELD_ORDER.indexOf(fromKey) + 1]);
+  if (el) el.focus();
+}
+
+function tsSourceValue(){
+  const sel = $('tsSourceSelect').value;
+  return sel === 'other' ? $('tsSourceOther').value.trim() : sel;
+}
+function tsIsValid(){
+  return !!(TS.storeId && TS.productPicked && priceValue($('tsPriceInput').value) !== null &&
+    tsSourceValue() && TS.confidence);
+}
+function updateTsSubmitButton(){ $('tsSubmitBtn').disabled = !tsIsValid(); }
+function setTsStatus(msg, isErr){
+  const el = $('tsStatusText');
+  el.textContent = msg;
+  el.classList.toggle('err', !!isErr);
+}
+
+/* ---- product combo: psearch, debounced ---- */
+function tsProductDropHasItems(){
+  const box = $('tsProductDrop');
+  return !box.classList.contains('hidden') && box.children.length > 0;
+}
+function renderTsProductDrop(loading){
+  const box = $('tsProductDrop');
+  box.innerHTML = '';
+  if (loading) {
+    const d = document.createElement('div');
+    d.className = 'combo-empty';
+    d.textContent = 'กำลังค้นหา…';
+    box.appendChild(d);
+    box.classList.remove('hidden');
+    return;
+  }
+  TS.productResults.forEach(p => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.innerHTML = `${esc([p.brand, p.item].filter(Boolean).join(' ')) || esc(String(p.barcode))}` +
+      `<span class="meta">${esc([p.sku, [p.size, p.unit].filter(Boolean).join(''), p.barcode].filter(Boolean).join(' · '))}</span>`;
+    b.addEventListener('click', () => pickTsProduct(p));
+    box.appendChild(b);
+  });
+  box.classList.toggle('hidden', !TS.productResults.length);
+}
+function pickTsProduct(p){
+  TS.productPicked = p;
+  $('tsProductInput').value = tsProductLabel(p);
+  $('tsProductDrop').innerHTML = '';
+  $('tsProductDrop').classList.add('hidden');
+  updateTsSubmitButton();
+  tsFocusNext('product');
+}
+async function runTsProductSearch(){
+  const q = $('tsProductInput').value.trim();
+  if (!q) { TS.productResults = []; renderTsProductDrop(false); return; }
+  const myToken = ++TS.searchToken;
+  const d = await api(`?action=psearch&q=${encodeURIComponent(q)}&limit=10`);
+  if (myToken !== TS.searchToken) return;   // a newer keystroke already fired a later search
+  TS.productResults = (d.ok && Array.isArray(d.p)) ? d.p : [];
+  renderTsProductDrop(false);
+}
+function onTsProductInput(){
+  TS.productPicked = null;   // typing after a pick invalidates it — must re-pick from the list
+  updateTsSubmitButton();
+  const q = $('tsProductInput').value.trim();
+  clearTimeout(tsSearchTimer);
+  if (!q) { TS.productResults = []; renderTsProductDrop(false); return; }
+  renderTsProductDrop(true);
+  tsSearchTimer = setTimeout(runTsProductSearch, 250);
+}
+
+/* ---- store combo: reuses S.stores + rankStores from Tab 1, own selection state ---- */
+function tsStoreDropHasItems(){
+  const box = $('tsStoreDrop');
+  return !box.classList.contains('hidden') && box.children.length > 0;
+}
+function renderTsStoreDrop(){
+  const raw = $('tsStoreInput').value.trim();
+  const box = $('tsStoreDrop');
+  const hits = rankStores(S.stores, raw, 10);
+  box.innerHTML = '';
+  if (!S.stores.length) {
+    const d = document.createElement('div');
+    d.className = 'combo-empty';
+    d.textContent = storesLoading ? 'กำลังโหลดรายชื่อร้าน…' : 'ยังไม่มีรายชื่อร้าน';
+    box.appendChild(d);
+  }
+  hits.forEach(s => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.innerHTML = `${esc(s.name)}` +
+      (s.channel || s.region ? `<span class="meta">${esc([s.region, s.channel].filter(Boolean).join(' · '))}</span>` : '');
+    b.addEventListener('click', () => pickTsStore(s));
+    box.appendChild(b);
+  });
+  box.classList.toggle('hidden', box.childElementCount === 0);
+}
+function pickTsStore(s){
+  TS.storeId = s.id; TS.storeName = s.name;
+  $('tsStoreInput').value = s.name;
+  $('tsStoreDrop').classList.add('hidden');
+  updateTsSubmitButton();
+  tsFocusNext('store');
+}
+
+/* ---- submit ---- */
+// The store and date are kept across a batch — the next entry is usually the same shop, same
+// visit — so only the product, price, source and confidence reset, mirroring Tab 1's
+// clearGridKeepStoreDate().
+function resetTsFormKeepStoreDate(){
+  TS.productPicked = null; TS.productResults = [];
+  $('tsProductInput').value = '';
+  $('tsProductDrop').innerHTML = ''; $('tsProductDrop').classList.add('hidden');
+  $('tsPriceInput').value = '';
+  $('tsSourceSelect').value = '';
+  $('tsSourceOther').value = '';
+  $('tsSourceOther').classList.add('hidden');
+  TS.confidence = '';
+  $('tsConfidence').querySelectorAll('button').forEach(b => b.classList.remove('on'));
+  $('tsNotesInput').value = '';
+  updateTsSubmitButton();
+  $('tsProductInput').focus();
+}
+
+async function submitTunsong(){
+  if (TS.submitting) return;
+  if (!tsIsValid()) { toast('กรอกข้อมูลให้ครบก่อนบันทึก', true); return; }
+  const price = priceValue($('tsPriceInput').value);
+  const dateVal = $('tsDateInput').value || todayStr();
+  const payload = {
+    type: 'tunsong', ts_id: makeId('T'), ts: visitISO(dateVal), store_id: TS.storeId,
+    barcode: TS.productPicked.barcode, price,
+    info_source: tsSourceValue(), confidence: TS.confidence,
+    notes: $('tsNotesInput').value.trim()
+  };
+  const label = tsProductLabel(TS.productPicked);
+
+  TS.submitting = true;
+  $('tsSubmitBtn').disabled = true;
+  setTsStatus('กำลังบันทึก…');
+
+  const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify(payload) }, 20000);
+
+  TS.submitting = false;
+  const r = d.ok && Array.isArray(d.results) ? d.results[0] : null;
+  if (!r || r.status !== 'written') {
+    setTsStatus(backendMsg(d, 'บันทึกไม่สำเร็จ'), true);
+    toast('บันทึกไม่สำเร็จ', true);
+    updateTsSubmitButton();
+    return;
+  }
+
+  setTsStatus(`บันทึกแล้ว — ${label} ราคาทุนส่ง ${price}`);
+  toast(`บันทึกทุนส่งแล้ว: ${label}`);
+  resetTsFormKeepStoreDate();
+  fetchTunsongList();
+}
+
+/* ---- recent entries list ---- */
+function tsEntryLabel(e){ return [e.brand, e.item, e.sku].filter(Boolean).join(' ') || String(e.barcode || ''); }
+
+function renderTunsongList(){
+  const body = $('tsListBody');
+  if (TS.listLoading) { body.innerHTML = '<tr><td colspan="6" class="empty-note">กำลังโหลด…</td></tr>'; return; }
+  if (TS.listError) { body.innerHTML = `<tr><td colspan="6" class="empty-note" style="color:var(--warn)">${esc(TS.listError)}</td></tr>`; return; }
+  if (!TS.entries.length) { body.innerHTML = '<tr><td colspan="6" class="empty-note">ยังไม่มีรายการ</td></tr>'; return; }
+  body.innerHTML = TS.entries.map(e => `<tr>
+    <td>${esc(e.date || '')}</td>
+    <td>${esc(e.store || '')}</td>
+    <td>${esc(tsEntryLabel(e))}</td>
+    <td>${esc(e.price)}</td>
+    <td>${esc(e.info_source || '')}</td>
+    <td>${esc(confLabel(e.confidence))}</td>
+  </tr>`).join('');
+}
+
+async function fetchTunsongList(){
+  TS.listLoading = true; TS.listError = '';
+  renderTunsongList();
+  const d = await api('?action=tunsonglist&limit=50');
+  TS.listLoading = false;
+  if (!d.ok || !Array.isArray(d.t)) {
+    TS.listError = backendMsg(d, 'โหลดรายการล่าสุดไม่สำเร็จ');
+    renderTunsongList();
+    return;
+  }
+  TS.entries = d.t;
+  TS.listLoaded = true;
+  renderTunsongList();
+}
+function ensureTunsongListLoaded(){
+  if (TS.listLoaded || TS.listLoading) return;
+  fetchTunsongList();
+}
+
 /* ================= MODE / TABS ================= */
 function setMode(mode, persist = true){
   S.mode = mode;
@@ -1715,9 +2043,11 @@ function showScreen(which){
   $('entryScreen').classList.toggle('hidden', which !== 'entry');
   $('reviewScreen').classList.toggle('hidden', which !== 'review');
   $('storesScreen').classList.toggle('hidden', which !== 'stores');
+  $('tunsongScreen').classList.toggle('hidden', which !== 'tunsong');
   $('tabEntry').classList.toggle('on', which === 'entry');
   $('tabReview').classList.toggle('on', which === 'review');
   $('tabStores').classList.toggle('on', which === 'stores');
+  $('tabTunsong').classList.toggle('on', which === 'tunsong');
 }
 
 /* ================= WIRING ================= */
@@ -1728,6 +2058,8 @@ document.addEventListener('click', e => {
     $('storeDrop').classList.add('hidden');
     const bd = $('rvBrandDrop'); if (bd) bd.classList.add('hidden');
     $('selGridBody').querySelectorAll('.combo-list').forEach(el => el.classList.add('hidden'));
+    $('tsProductDrop').classList.add('hidden');
+    $('tsStoreDrop').classList.add('hidden');
   }
 });
 
@@ -1837,6 +2169,7 @@ $('submitBtn').addEventListener('click', submitBatch);
 $('tabEntry').addEventListener('click', () => showScreen('entry'));
 $('tabReview').addEventListener('click', () => showScreen('review'));
 $('tabStores').addEventListener('click', () => { showScreen('stores'); ensureStoresLoaded(); });
+$('tabTunsong').addEventListener('click', () => { showScreen('tunsong'); ensureTunsongListLoaded(); });
 
 /* ---- review tab wiring ---- */
 $('reviewFetchBtn').addEventListener('click', fetchReviewQueue);
@@ -1895,6 +2228,55 @@ $('storeModalOverlay').addEventListener('click', e => {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !$('storeModalOverlay').classList.contains('hidden')) closeStoreModal();
 });
+/* ---- ทุนส่ง tab wiring ---- */
+$('tsProductInput').addEventListener('input', onTsProductInput);
+$('tsProductInput').addEventListener('focus', () => { if (TS.productResults.length) renderTsProductDrop(false); });
+$('tsStoreInput').addEventListener('input', renderTsStoreDrop);
+$('tsStoreInput').addEventListener('focus', renderTsStoreDrop);
+$('tsPriceInput').addEventListener('input', updateTsSubmitButton);
+$('tsSourceSelect').addEventListener('change', () => {
+  const isOther = $('tsSourceSelect').value === 'other';
+  $('tsSourceOther').classList.toggle('hidden', !isOther);
+  if (isOther) $('tsSourceOther').focus();
+  updateTsSubmitButton();
+});
+$('tsSourceOther').addEventListener('input', updateTsSubmitButton);
+$('tsConfidence').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-conf]');
+  if (!btn) return;
+  TS.confidence = btn.dataset.conf;
+  $('tsConfidence').querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
+  updateTsSubmitButton();
+  tsFocusNext('confidence');
+});
+$('tsSubmitBtn').addEventListener('click', submitTunsong);
+$('tsReloadBtn').addEventListener('click', fetchTunsongList);
+
+// Keyboard-first: Enter walks the fixed field order below; picking from an open combo list
+// (product/store) counts as that field's commit. Ctrl/Cmd+Enter always submits, from any field
+// in the form, including the notes textarea where a plain Enter must stay a newline.
+$('tsForm').addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); submitTunsong(); return; }
+  if (e.key !== 'Enter') return;
+  const id = e.target.id;
+  if (id === 'tsProductInput') {
+    e.preventDefault();
+    if (tsProductDropHasItems()) $('tsProductDrop').querySelector('button').click();
+    else if (TS.productPicked) tsFocusNext('product');
+  } else if (id === 'tsStoreInput') {
+    e.preventDefault();
+    if (tsStoreDropHasItems()) $('tsStoreDrop').querySelector('button').click();
+    else if (TS.storeId) tsFocusNext('store');
+  } else if (id === 'tsDateInput') {
+    e.preventDefault(); tsFocusNext('date');
+  } else if (id === 'tsPriceInput') {
+    e.preventDefault(); tsFocusNext('price');
+  } else if (id === 'tsSourceSelect' || id === 'tsSourceOther') {
+    e.preventDefault(); tsFocusNext('source');
+  }
+  // tsNotesInput: Enter is left alone — it types a newline, per textarea convention.
+});
+
 // A minimal focus trap: Tab/Shift+Tab cycles only within the panel while it is open.
 $('storeModalPanel').addEventListener('keydown', e => {
   if (e.key !== 'Tab') return;
@@ -1909,6 +2291,7 @@ $('storeModalPanel').addEventListener('keydown', e => {
 /* ================= INIT ================= */
 function init(){
   $('dateInput').value = todayStr();
+  $('tsDateInput').value = todayStr();
   restoreDraft();               // may overwrite date/store/mode/rows from a saved draft
   updateSubmitButton();
   renderSummary();
