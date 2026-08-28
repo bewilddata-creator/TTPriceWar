@@ -97,13 +97,29 @@ tr.rowbtn{cursor:pointer} tr.rowbtn:hover td{background:var(--paper)}
 .close-x{margin-left:auto; font-size:22px; color:var(--mut); padding:4px 8px}
 .hidden{display:none!important}
 footer{position:fixed; bottom:0; left:0; right:0; background:var(--card); border-top:1px solid var(--line);
-  padding:8px 16px; font-size:12px; color:var(--mut); z-index:30; display:flex; gap:12px; align-items:center; justify-content:center}
+  padding:8px 16px 9px; font-size:12px; color:var(--mut); z-index:30; display:flex; flex-direction:column; gap:3px; align-items:center}
+.footRow{display:flex; gap:12px; align-items:center; justify-content:center; flex-wrap:wrap; width:100%}
+.footHelp{font-size:10.5px; color:var(--mut); opacity:.75; text-align:center; line-height:1.3}
 footer button{color:var(--tag-deep); font-weight:700}
+footer button:disabled{opacity:.5; cursor:default}
 .loading-wrap{display:grid; place-items:center; padding:70px 20px; text-align:center; color:var(--mut)}
 .spin{width:26px; height:26px; border:3px solid var(--line); border-top-color:var(--tag); border-radius:99px;
   animation:sp 1s linear infinite; margin:0 auto 14px}
+.spin-sm{display:inline-block; width:13px; height:13px; border:2px solid var(--line); border-top-color:var(--tag-deep);
+  border-radius:99px; animation:sp .8s linear infinite; vertical-align:-2px; margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
+@keyframes barIndet{0%{margin-left:-40%}100%{margin-left:100%}}
 .retry-btn{margin-top:14px; padding:10px 18px; border-radius:99px; background:var(--ink); color:#fff; font-weight:700; font-size:13px}
+/* ---- download progress: full panel while nothing is on screen yet, mini bar in the footer
+   while a refresh/rebuild refetch runs behind already-visible content ---- */
+.progress-wrap{width:100%; max-width:320px; margin:0 auto}
+.progress-track{width:100%; height:10px; background:var(--paper); border:1px solid var(--line); border-radius:99px; overflow:hidden; margin-bottom:10px}
+.progress-fill{height:100%; background:var(--tag); width:0%; transition:width .15s}
+.progress-fill.indet, .mini-fill.indet{width:40%!important; animation:barIndet 1s ease-in-out infinite alternate}
+.progress-txt{font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:14px; color:var(--ink); margin-bottom:4px}
+.progress-sub{font-size:12px; color:var(--mut)}
+.mini-progress{width:70px; height:6px; background:var(--paper); border:1px solid var(--line); border-radius:99px; overflow:hidden; flex:none}
+.mini-fill{display:block; height:100%; background:var(--tag); width:0%; transition:width .15s}
 </style>
 </head>
 <body>
@@ -118,7 +134,11 @@ footer button{color:var(--tag-deep); font-weight:700}
 </header>
 
 <main id="mainWrap">
-  <div class="loading-wrap" id="loading"><div><div class="spin"></div>กำลังโหลดข้อมูลสรุป (~500 KB)…<br><span style="font-size:12px">ครั้งแรกใช้เวลาสักครู่ หลังจากนั้นเปิดได้ทันทีจากแคช</span></div></div>
+  <div class="loading-wrap" id="loading"><div class="progress-wrap">
+    <div class="progress-track"><div class="progress-fill indet" id="pgFill"></div></div>
+    <div class="progress-txt" id="pgTxt">0.0 MB</div>
+    <div class="progress-sub">กำลังโหลดข้อมูลสรุป… ครั้งแรกใช้เวลาสักครู่ หลังจากนั้นเปิดได้ทันทีจากแคช</div>
+  </div></div>
 
   <section id="vSearch" class="hidden">
     <div class="searchbar"><input type="text" id="q" placeholder="ค้นหาสินค้า… พิมพ์ผิดได้ สลับคำได้" autocomplete="off"></div>
@@ -175,8 +195,13 @@ footer button{color:var(--tag-deep); font-weight:700}
 </div>
 
 <footer>
-  <span id="footInfo">—</span>
-  <button id="refreshBtn">รีเฟรชข้อมูล</button>
+  <div class="footRow">
+    <span id="footInfo">—</span>
+    <div class="mini-progress hidden" id="miniProgress"><span class="mini-fill" id="miniFill"></span></div>
+    <button id="refreshBtn">รีเฟรชข้อมูล</button>
+    <button id="rebuildBtn">อัปเดตข้อมูลวิเคราะห์</button>
+  </div>
+  <div class="footHelp">ข้อมูลวิเคราะห์อัปเดตอัตโนมัติทุกคืนเวลา 03:00 น. — ปุ่มนี้สั่งให้อัปเดตทันที</div>
 </footer>
 
 <script type="module">
@@ -187,6 +212,7 @@ const API_URL = "https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q
 const NET_TIMEOUT = 12000;
 const SUMMARY_TIMEOUT = 25000;
 const PRICES_TIMEOUT = 20000;
+const REBUILD_TIMEOUT = 130000;   // buildAnalysis() re-reads 26k+ products / 45k+ observations — 30-60s is normal
 
 /* ================= tiny DOM / format helpers ================= */
 const $ = id => document.getElementById(id);
@@ -227,6 +253,71 @@ function apiFailMsg(d, fallback){
   if(d.offline) return 'เชื่อมต่ออินเทอร์เน็ตไม่สำเร็จ — เช็คสัญญาณแล้วลองใหม่';
   if(d.ok === true) return 'เซิร์ฟเวอร์ตอบกลับมาแต่ไม่มีข้อมูลที่ต้องการ (action=summary อาจยังไม่เปิดใช้งานฝั่ง backend) — ลองใหม่ภายหลัง';
   return fallback;
+}
+
+/**
+ * ?action=summary is ~2.4MB decompressed and can take several seconds on a poor connection, so
+ * this streams the body instead of a plain res.json() and reports live byte counts via
+ * onProgress(loadedBytes, expectedTotalBytes|null, indeterminate). expectedTotalBytes comes from
+ * localStorage (the decompressed size of the last successful load) — never from the
+ * Content-Length header: that header holds the *compressed* transfer size (when it is even
+ * readable cross-origin, which it usually is not without Access-Control-Expose-Headers, unset
+ * here), so comparing it against decompressed bytes-read would make the bar hit 100% early.
+ * Falls back to a plain res.json() when the stream reader isn't available (older browsers).
+ */
+async function fetchSummaryStreaming(path, timeout, onProgress){
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeout);
+  let res;
+  try {
+    res = await fetch(API_URL + path, { signal: ctl.signal });
+  } catch(e) {
+    clearTimeout(timer);
+    return { data: { ok:false, offline:true }, bytes:null };
+  }
+  try {
+    if(!res.body || !res.body.getReader){
+      if(onProgress) onProgress(0, null, true);
+      return { data: await res.json(), bytes:null };
+    }
+    const estTotal = ls.get('summaryByteEst', null);   // null on the very first load ever
+    const reader = res.body.getReader();
+    const chunks = [];
+    let received = 0;
+    while(true){
+      const { done, value } = await reader.read();
+      if(done) break;
+      chunks.push(value);
+      received += value.length;
+      if(onProgress) onProgress(received, estTotal, !estTotal);
+    }
+    const buf = new Uint8Array(received);
+    let offset = 0;
+    for(const c of chunks){ buf.set(c, offset); offset += c.length; }
+    const text = new TextDecoder().decode(buf);
+    return { data: JSON.parse(text), bytes: received };
+  } catch(e) {
+    return { data: { ok:false, offline: e.name === 'AbortError' }, bytes:null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function fmtBytes(n){ return (n/1048576).toFixed(1) + ' MB'; }
+/* Percentage is capped at 99 while streaming so it never falsely reads 100% before JSON.parse
+   actually finishes; indeterminate (no stored estimate yet) shows only the running byte count. */
+function pctOf(loaded, total, indet){ return (!indet && total) ? Math.min(99, Math.round(loaded/total*100)) : null; }
+function renderPanelProgress(loaded, total, indet){
+  const pct = pctOf(loaded, total, indet);
+  $("pgFill").classList.toggle('indet', !!indet);
+  if(!indet) $("pgFill").style.width = pct + '%';
+  $("pgTxt").textContent = (pct!=null ? pct+'% · ' : '') + fmtBytes(loaded);
+}
+function renderFooterProgress(loaded, total, indet){
+  const pct = pctOf(loaded, total, indet);
+  $("miniProgress").classList.remove('hidden');
+  $("miniFill").classList.toggle('indet', !!indet);
+  if(!indet) $("miniFill").style.width = pct + '%';
+  $("footInfo").textContent = `กำลังโหลดข้อมูลใหม่… ${pct!=null ? pct+'% · ' : ''}${fmtBytes(loaded)}`;
 }
 
 /* ================= tiny IndexedDB cache =================
@@ -310,20 +401,36 @@ function decode(d){
   PBY_BC = new Map(P.map(p => [p.bc, p]));
 }
 
-/* ================= LOAD ================= */
-async function boot(){
+/* ================= LOAD =================
+   Progress is only ever surfaced (full panel pre-start, mini bar+footer text once started) when
+   there is nothing cached to show yet, or the caller explicitly asked for it (user-triggered
+   refresh / post-rebuild refetch). A plain background refresh behind already-rendered cached
+   data stays silent, exactly as before. */
+async function boot(forceProgress){
   let cached = null;
   try { cached = await idbGet('summary'); } catch(err) { cached = null; }
   if(cached && Array.isArray(cached.p) && Array.isArray(cached.s)) start(cached, true);
-  if(!started){
-    $("loading").innerHTML = '<div><div class="spin"></div>กำลังโหลดข้อมูลสรุป (~500 KB)…<br><span style="font-size:12px">ครั้งแรกใช้เวลาสักครู่ หลังจากนั้นเปิดได้ทันทีจากแคช</span></div>';
+  const showProgress = forceProgress || !started;
+  const prevFootInfo = $("footInfo").textContent;
+  if(showProgress && !started){
+    renderPanelProgress(0, ls.get('summaryByteEst', null), !ls.get('summaryByteEst', null));
   }
-  const d = await api('?action=summary', {}, SUMMARY_TIMEOUT);
+  const onProgress = showProgress
+    ? (loaded, total, indet) => { if(!started) renderPanelProgress(loaded, total, indet); else renderFooterProgress(loaded, total, indet); }
+    : null;
+  const { data: d, bytes } = await fetchSummaryStreaming('?action=summary', SUMMARY_TIMEOUT, onProgress);
+  if(showProgress) $("miniProgress").classList.add('hidden');
   if(d.ok && Array.isArray(d.p) && Array.isArray(d.s) && Array.isArray(d.brands)){
-    if(!started || !cached || d.generated !== cached.generated) start(d, false);
+    if(bytes) ls.set('summaryByteEst', bytes);   // remember decompressed size for next time's % estimate
+    const changed = !cached || d.generated !== cached.generated;
+    if(!started || changed || showProgress) start(d, false);
     idbSet('summary', d);   // best-effort write; a failure here must never block rendering
   } else if(!started){
     $("loading").innerHTML = `<div>${esc(apiFailMsg(d, 'โหลดข้อมูลไม่สำเร็จ'))}<br><button class="retry-btn" id="retryBtn">ลองใหม่</button></div>`;
+  } else if(showProgress){
+    const msg = apiFailMsg(d, 'รีเฟรชข้อมูลไม่สำเร็จ');
+    $("footInfo").textContent = msg;
+    setTimeout(() => { if($("footInfo").textContent === msg) $("footInfo").textContent = prevFootInfo; }, 5000);
   }
 }
 function start(d, fromCache){
@@ -338,7 +445,38 @@ function start(d, fromCache){
     renderCurrent();
   }
 }
-function refresh(){ $("footInfo").textContent = 'กำลังรีเฟรช…'; boot(); }
+function refresh(){ if(started) $("footInfo").textContent = 'กำลังรีเฟรช…'; boot(true); }
+
+/* ================= REBUILD =================
+   ?action=rebuild re-reads the whole product/observation sheet server-side (30-60s), so the
+   button must make that wait obvious and non-repeatable, then pull the freshly rebuilt summary
+   so the numbers on screen actually change — rebuilding and still showing yesterday's data would
+   be worse than not having the button at all. */
+let rebuilding = false;
+async function doRebuild(){
+  if(rebuilding) return;
+  rebuilding = true;
+  const btn = $("rebuildBtn");
+  const prevHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin-sm"></span>กำลังอัปเดต… อาจใช้เวลาถึง 1 นาที';
+  const prevFootInfo = $("footInfo").textContent;
+  const d = await api('?action=rebuild', {}, REBUILD_TIMEOUT);
+  if(d && d.ok){
+    $("footInfo").textContent = `อัปเดตสำเร็จ ${(d.n||0).toLocaleString()} สินค้า (${d.generated}) · กำลังโหลดข้อมูลล่าสุด…`;
+    await boot(true);   // refetch summary (with visible progress), overwrite the IDB cache, re-render
+  } else if(d && d.busy){
+    $("footInfo").textContent = 'มีการอัปเดตข้อมูลอยู่แล้ว — ลองใหม่อีกครั้งในอีกสักครู่';
+    setTimeout(() => { if($("footInfo").textContent.startsWith('มีการอัปเดตข้อมูลอยู่แล้ว')) $("footInfo").textContent = prevFootInfo; }, 4000);
+  } else {
+    const msg = (d && d.error) ? `อัปเดตไม่สำเร็จ: ${d.error}` : apiFailMsg(d, 'อัปเดตข้อมูลไม่สำเร็จ');
+    $("footInfo").textContent = msg;
+    setTimeout(() => { if($("footInfo").textContent === msg) $("footInfo").textContent = prevFootInfo; }, 5000);
+  }
+  btn.disabled = false;
+  btn.innerHTML = prevHtml;
+  rebuilding = false;
+}
 function renderCurrent(){
   if(curTab === 'search') renderSearch($("q").value);
   if(curTab === 'cat') buildCat();
@@ -569,6 +707,7 @@ function initEvents(){
   $("tabCat").addEventListener('click', ()=>tab('cat'));
   $("tabBrand").addEventListener('click', ()=>tab('brand'));
   $("refreshBtn").addEventListener('click', refresh);
+  $("rebuildBtn").addEventListener('click', doRebuild);
 
   $("q").addEventListener('input', e=>{ clearTimeout(debT); debT=setTimeout(()=>renderSearch(e.target.value),120); });
   $("results").addEventListener('click', e=>{ const c=e.target.closest('.pcard'); if(c) openDetail(c.dataset.bc); });
