@@ -98,6 +98,14 @@ th[data-key] .sortarrow{margin-left:3px; display:inline-block}
 #ov .nm{font-size:18px; font-weight:800; line-height:1.25; margin:3px 0}
 #ov .sku{font-size:13px; color:var(--mut); font-weight:600}
 #ov .bc{font-size:12px; color:var(--mut); margin-top:6px; font-family:'IBM Plex Mono',monospace}
+#ov .sub{font-size:11px; color:var(--mut); margin-top:2px; font-weight:400}
+/* ---- ราคาส่ง (wholesale): ok-green eyebrow, otherwise plain ---- */
+#ov .sec-ws{margin-top:16px}
+#ov .sec-ws .eyebrow{color:var(--ok)}
+/* ---- ทุนส่ง (tunsong): the most sensitive data here, so it gets its own tinted panel — never
+   mistakable for a retail/wholesale row at a glance ---- */
+#ov .sec-tun{margin-top:16px; background:var(--tun-bg); border-radius:12px; padding:12px}
+#ov .sec-tun .eyebrow{color:var(--tun)}
 .flagpill{display:inline-block; font-size:10.5px; font-weight:800; padding:2px 8px; border-radius:99px; margin-left:6px}
 .flagpill.promo{background:var(--amber-bg); color:var(--amber)}
 .flagpill.exp{background:#FBEFE9; color:var(--warn)}
@@ -216,9 +224,20 @@ footer button:disabled{opacity:.5; cursor:default}
       </div>
     </div>
     <div style="margin-top:16px">
-      <div class="eyebrow">ราคาล่าสุดรายร้าน</div>
+      <div class="eyebrow">ราคาปลีก</div>
       <table><thead><tr><th>ร้าน</th><th>วันที่เห็น</th><th class="num">ราคา</th></tr></thead>
       <tbody id="dRows"></tbody></table>
+    </div>
+    <div class="sec-ws hidden" id="dWholesaleSec">
+      <div class="eyebrow">ราคาส่ง</div>
+      <table><thead><tr><th>ร้าน</th><th>วันที่เห็น</th><th class="num">ราคา</th><th class="num">ต่ำกว่าปลีก</th></tr></thead>
+      <tbody id="dWholesaleRows"></tbody></table>
+    </div>
+    <div class="sec-tun hidden" id="dTunsongSec">
+      <div class="eyebrow">ทุนส่ง</div>
+      <table><thead><tr><th>ร้าน</th><th>แหล่งข้อมูล</th><th>ความเชื่อมั่น</th><th>วันที่</th><th class="num">ราคา</th></tr></thead>
+      <tbody id="dTunsongRows"></tbody></table>
+      <div class="meta-line" style="margin:6px 2px 0">ข้อมูลภายใน — ไม่เปิดเผยต่อร้านค้า</div>
     </div>
   </div>
 </div>
@@ -442,9 +461,10 @@ let IMG = null, imgFetchedOnce = false, imgLenWarned = false, SUMMARY_GENERATED 
  * decode there is no per-observation loop over a raw price log, and the detail sheet no longer
  * needs a ?action=lookup round trip for size/unit. A cached payload from before size/unit
  * existed simply destructures those two as undefined, defaulted to '' below so nothing renders
- * "undefined". No image URL and no wholesale (ทุนส่ง) figures exist in this payload; the image
- * comes from the separate ?action=images payload (see applyImagesToP()) and ทุนส่ง is not shown
- * at all.
+ * "undefined". No image URL exists in this payload; the image comes from the separate
+ * ?action=images payload (see applyImagesToP()). ราคาส่ง (wholesale) and ทุนส่ง (what a shop paid)
+ * aren't in this payload either — ราคาส่ง rides along on the per-product ?action=prices response
+ * (flag:'wholesale') and ทุนส่ง has its own ?action=tunsong endpoint, both fetched in openDetail().
  */
 function decode(d){
   // s rows are [store_id, name, region, channel] — see buildAnalysis() in code.gs.
@@ -669,8 +689,10 @@ function renderSearch(q){
 /* ================= DETAIL =================
    The image and size/unit no longer need their own network round trip: size/unit ride along on
    the ?action=summary payload (see decode()), and the image comes from the already-loaded/loading
-   ?action=images payload (p.img, see applyImagesToP()). Only prices still needs a fetch, which
-   halves the sheet's fixed network cost versus the old lookup+prices pair. */
+   ?action=images payload (p.img, see applyImagesToP()). Two fetches remain — prices (ราคาปลีก +
+   ราคาส่ง, same response, split by flag) and tunsong (ทุนส่ง) — and they are kicked off together
+   and rendered independently as each resolves, never serialised: each costs ~1.5s on its own, and
+   neither section may block on, or be blanked by, the other's success or failure. */
 // bc of whichever product the detail sheet is currently showing, so a late-arriving images
 // payload (loadImagesBackground can finish well after the sheet is opened, or even after it's
 // closed and a different one opened) knows whether it still needs to paint into #dImg.
@@ -681,6 +703,12 @@ function resetDetailLoading(p){
   $("dSize").textContent = [p.size, p.unit].filter(Boolean).join(' ');
   $("dBc").textContent = p.bc + ' · ' + [p.c1,p.c2,p.c3].filter(Boolean).join(' › ');
   $("dRows").innerHTML = `<tr><td colspan="3" style="color:var(--mut)">กำลังโหลด…</td></tr>`;
+  // ราคาส่ง/ทุนส่ง stay hidden (and cleared) until their own request resolves — a previous
+  // product's rows must never flash under the new one's header while its fetch is in flight.
+  $("dWholesaleSec").classList.add('hidden');
+  $("dWholesaleRows").innerHTML = '';
+  $("dTunsongSec").classList.add('hidden');
+  $("dTunsongRows").innerHTML = '';
 }
 /**
  * Paints (or re-paints) the detail sheet's image slot from p.img. Called once synchronously when
@@ -708,16 +736,75 @@ async function openDetail(bc){
   renderDetailImage(p);
   const reqId = ++detailReq;
   const norm = normBarcode(p.bc);
-  const pr = await api(`?action=prices&barcode=${encodeURIComponent(norm)}`, {}, PRICES_TIMEOUT);
-  if(reqId !== detailReq) return;   // a different product was opened while this was in flight
-
+  // Fired together, not awaited in sequence: serialising these would double the sheet's wait
+  // (~1.5s each) for no reason, since the two responses have nothing to do with each other.
+  const pricesReq = api(`?action=prices&barcode=${encodeURIComponent(norm)}`, {}, PRICES_TIMEOUT);
+  const tunsongReq = api(`?action=tunsong&barcode=${encodeURIComponent(norm)}`, {}, PRICES_TIMEOUT);
+  pricesReq.then(pr => { if(reqId === detailReq) renderPricesSections(pr); });
+  tunsongReq.then(ts => { if(reqId === detailReq) renderTunsongSection(ts); });
+}
+/**
+ * Splits the single ?action=prices response into ราคาปลีก (normal/promo/short_shelf_life) and
+ * ราคาส่ง (flag:'wholesale') — excluding wholesale rather than allowlisting the three retail
+ * flags, so a legacy row with no flag at all still lands in retail instead of silently vanishing.
+ * A request failure here must not touch #dTunsongRows — see renderTunsongSection(), driven by
+ * the independent tunsongReq promise in openDetail().
+ */
+function renderPricesSections(pr){
   if(pr && pr.ok && Array.isArray(pr.prices)){
-    $("dRows").innerHTML = pr.prices.length ? pr.prices.map(o=>`
+    const retail = pr.prices.filter(o => o.flag !== 'wholesale');
+    const wholesale = pr.prices.filter(o => o.flag === 'wholesale');
+    $("dRows").innerHTML = retail.length ? retail.map(o=>`
       <tr><td>${esc(o.store)}${o.flag==='promo'?'<span class="flagpill promo">โปรฯ</span>':o.flag==='short_shelf_life'?'<span class="flagpill exp">ใกล้หมดอายุ</span>':''}</td>
       <td>${esc(o.date)}</td><td class="num">${fmt(o.price)}</td></tr>`).join('')
       : `<tr><td colspan="3" style="color:var(--mut)">ยังไม่มีการบันทึกราคา</td></tr>`;
+    renderWholesaleSection(wholesale, retail);
   } else {
     $("dRows").innerHTML = `<tr><td colspan="3" style="color:var(--warn)">โหลดราคาไม่สำเร็จ — ปิดแล้วลองเปิดใหม่</td></tr>`;
+    $("dWholesaleSec").classList.add('hidden');   // came from the same failed request — nothing to show
+  }
+}
+/**
+ * ราคาส่ง rows, each measured against that SAME shop's own `normal`-flag retail price — comparing
+ * against a different shop's shelf price would be meaningless, so the % only appears when this
+ * exact shop has a normal row in the same response. Hidden entirely when there are no wholesale
+ * rows at all, per spec: no empty header.
+ */
+function renderWholesaleSection(wholesale, retail){
+  if(!wholesale.length){ $("dWholesaleSec").classList.add('hidden'); return; }
+  const normalByStore = new Map();
+  retail.forEach(o => { if(o.flag === 'normal') normalByStore.set(o.store, o.price); });
+  $("dWholesaleRows").innerHTML = wholesale.map(o => {
+    const normalPrice = normalByStore.get(o.store);
+    const pct = normalPrice ? Math.round((1 - o.price/normalPrice) * 100) + '%' : '—';
+    // A row typed straight into the Sheet can lack a quantity; the phone blocks that, but
+    // "ขั้นต่ำ 0 ชิ้น" would read as a real offer rather than missing data.
+    const qty = Number(o.min_qty) > 0
+      ? `<div class="sub">ขั้นต่ำ ${esc(o.min_qty)} ชิ้น</div>`
+      : `<div class="sub">ไม่ระบุขั้นต่ำ</div>`;
+    return `<tr><td>${esc(o.store)}${qty}</td>
+      <td>${esc(o.date)}</td><td class="num">${fmt(o.price)}</td><td class="num">${pct}</td></tr>`;
+  }).join('');
+  $("dWholesaleSec").classList.remove('hidden');
+}
+/**
+ * ทุนส่ง — an entirely separate, independent request (see tunsongReq in openDetail()). No margin
+ * against retail is computed here; that was explicitly out of scope. Empty result (ok:true, t:[])
+ * is normal and just hides the section; a genuine fetch failure surfaces its own error inside this
+ * section instead of hiding silently — silent hiding would be indistinguishable from "no ทุนส่ง
+ * data exists" — and never touches #dRows/#dWholesaleRows either way.
+ */
+function renderTunsongSection(ts){
+  if(ts && ts.ok && Array.isArray(ts.t)){
+    if(!ts.t.length){ $("dTunsongSec").classList.add('hidden'); return; }
+    $("dTunsongRows").innerHTML = ts.t.map(o => `
+      <tr><td>${esc(o.store)}${o.notes ? `<div class="sub">${esc(o.notes)}</div>` : ''}</td>
+      <td>${esc(o.info_source)}</td><td>${esc(o.confidence)}</td>
+      <td>${esc(o.date)}</td><td class="num">${fmt(o.price)}</td></tr>`).join('');
+    $("dTunsongSec").classList.remove('hidden');
+  } else {
+    $("dTunsongRows").innerHTML = `<tr><td colspan="5" style="color:var(--warn)">โหลดข้อมูลทุนส่งไม่สำเร็จ</td></tr>`;
+    $("dTunsongSec").classList.remove('hidden');
   }
 }
 function closeOverlay(){ $("ov").style.display = 'none'; curDetailBc = null; }

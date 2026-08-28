@@ -117,6 +117,7 @@ main{flex:1; padding:12px; display:flex; flex-direction:column; gap:10px; paddin
 .prices .row .pr{margin-left:auto; font-family:'IBM Plex Mono',monospace; font-weight:700}
 .prices .row.promo .pr{color:var(--amber)}
 .prices .row.short_shelf_life .pr{color:var(--warn)}
+.prices .row.wholesale .pr{color:var(--ok)}
 .prices .none{font-size:13px; color:var(--mut)}
 
 .miss{border-left:5px solid var(--amber); background:var(--amber-bg)}
@@ -146,11 +147,21 @@ main{flex:1; padding:12px; display:flex; flex-direction:column; gap:10px; paddin
 .price-tag .amt.empty{opacity:.35}
 .price-tag .lbl{font-size:10.5px; font-weight:700; letter-spacing:1.5px; opacity:.75; margin-top:2px}
 
-.flags{display:flex; gap:8px; margin:8px 0 0}
-.flags .chip-btn{flex:1; font-size:13px; padding:9px 6px}
+/* Four flags no longer fit one row without shrinking below a reliable tap target, so they
+   wrap to two rows of two instead — each stays as wide and as tall as it was at three across. */
+.flags{display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 0}
+.flags .chip-btn{flex:1 1 calc(50% - 4px); font-size:13px; padding:11px 6px}
 .flags .chip-btn.on{border-color:var(--ink); background:var(--ink); color:#fff}
 .flags .chip-btn.on.exp{background:var(--warn); border-color:var(--warn)}
 .flags .chip-btn.on.promo{background:var(--amber); border-color:var(--amber)}
+.flags .chip-btn.on.wholesale{background:var(--ok); border-color:var(--ok)}
+
+/* Quantity only matters for a wholesale row, so it appears only while that flag is on —
+   shown inside #fold, same as everything else needed to record one price. */
+.qty-wrap{margin-top:8px}
+.qty-wrap .tin{padding:11px; font-size:15px}
+.qty-wrap .tin:focus{border-color:var(--ok)}
+.qty-wrap .hint{font-size:11.5px; color:var(--mut); margin-top:4px}
 
 .pad{display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin-top:7px}
 .pad button{padding:15px 0; font-size:23px; font-weight:600; background:var(--paper);
@@ -172,6 +183,7 @@ main{flex:1; padding:12px; display:flex; flex-direction:column; gap:10px; paddin
 .logcard .amt2{font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:17px; flex:none}
 .logcard.promo .amt2{color:var(--amber)}
 .logcard.short_shelf_life .amt2{color:var(--warn)}
+.logcard.wholesale .amt2{color:var(--ok)}
 .logcard .act{flex:none; min-width:64px; text-align:right}
 .undo{background:var(--warn); color:#fff; border-radius:99px; padding:8px 12px;
   font-size:12.5px; font-weight:700; white-space:nowrap}
@@ -299,6 +311,12 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
         <button class="chip-btn on" data-f="normal">ปกติ</button>
         <button class="chip-btn exp" data-f="short_shelf_life">ใกล้หมดอายุ</button>
         <button class="chip-btn promo" data-f="promo">โปรฯ</button>
+        <button class="chip-btn wholesale" data-f="wholesale">ราคาส่ง</button>
+      </div>
+      <div class="qty-wrap hidden" id="qtyWrap">
+        <div class="eyebrow">จำนวนขั้นต่ำ (ชิ้น)</div>
+        <input type="text" id="qtyInput" class="tin" inputmode="numeric" placeholder="12" autocomplete="off">
+        <div class="hint" id="qtyHint">ต้องระบุจำนวนขั้นต่ำก่อนบันทึก</div>
       </div>
       <div class="pad" id="pad">
         <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
@@ -392,7 +410,7 @@ const NET_TIMEOUT = 12000;
 /* ================= STATE ================= */
 const S = { store:null, storeId:null, newStore:null, stores:[], recent:[],
             tab:"capture", cdn:"", code:null, product:null, isNew:false, photo:null,
-            price:"", flag:"normal", count:0 };
+            price:"", flag:"normal", qty:"", count:0 };
 
 const $ = id => document.getElementById(id);
 const esc = v => String(v).replace(/[&<>"\']/g, m =>
@@ -546,7 +564,7 @@ async function refreshStores(){
 }
 
 /* ================= CAPTURE ================= */
-const FLAG_TH = { normal:"ปกติ", promo:"โปรฯ", short_shelf_life:"ใกล้หมดอายุ" };
+const FLAG_TH = { normal:"ปกติ", promo:"โปรฯ", short_shelf_life:"ใกล้หมดอายุ", wholesale:"ราคาส่ง" };
 const fmtPrice = n => "฿" + (n % 1 ? n.toFixed(2) : n.toLocaleString());
 
 /** A barcode arrived — by typing, by Enter, or from the camera. */
@@ -618,7 +636,10 @@ function showUnresolved(code){
 function renderPrice(){
   $('amt').textContent = S.price || '0';
   $('amt').classList.toggle('empty', !S.price);
-  $('saveBtn').disabled = priceValue(S.price) === null;
+  // A wholesale row without a quantity is meaningless — ฿45 buys what? — so it blocks save
+  // exactly like a missing price does, not a soft warning that lets the tap through.
+  const qtyOk = S.flag !== 'wholesale' || Number(S.qty) > 0;
+  $('saveBtn').disabled = priceValue(S.price) === null || !qtyOk;
 }
 function key(k){ S.price = priceKey(S.price, k); renderPrice(); }
 
@@ -626,12 +647,16 @@ function setFlag(f){
   S.flag = f;
   $('flagRow').querySelectorAll('.chip-btn').forEach(b =>
     b.classList.toggle('on', b.dataset.f === f));
+  const isWholesale = f === 'wholesale';
+  $('qtyWrap').classList.toggle('hidden', !isWholesale);
+  if (!isWholesale) { S.qty = ''; $('qtyInput').value = ''; }
+  renderPrice();   // switching flags can flip whether the quantity gate applies
 }
 
 /** Clear the current item but keep the store, the tab and the camera as they are. */
 function resetItem(clearCode = true){
   S.code = null; S.product = null; S.isNew = false; S.photo = null;
-  S.price = ''; renderPrice(); setFlag('normal');
+  S.price = ''; S.qty = ''; renderPrice(); setFlag('normal');
   if (clearCode) $('codeInput').value = '';
   $('captureScreen').classList.remove('has-item');
   ['hitCard','missCard','priceCard'].forEach(id => $(id).classList.add('hidden'));
@@ -722,12 +747,17 @@ const persistOutbox = () => ls.set('ps_outbox', OUTBOX);
 
 function saveObservation(){
   const price = priceValue(S.price);
+  // Belt and suspenders: the save button is already disabled in this state, but a save
+  // must never depend on the button being the only thing standing between it and a
+  // meaningless wholesale row with no quantity.
   if (price === null || !S.code || !S.storeId) return;
+  if (S.flag === 'wholesale' && !(Number(S.qty) > 0)) return;
 
   const rec = buildObs({
     obsId: makeId('O'), ts: new Date().toISOString(), storeId: S.storeId,
     barcode: S.code, price, flag: S.flag, by: DEVICE,
     source: $('reader').classList.contains('hidden') ? 'manual' : 'scan',
+    minQty: S.qty,
     newStore: S.newStore || undefined,
     // Always sent. The backend creates a Products row ONLY when the barcode is genuinely
     // unknown, so an observation can never point at a product that does not exist.
@@ -905,7 +935,10 @@ const saveSession = () => ls.set('ps_session', SESSION.slice(0, 100));
 
 function logAdd(rec, name, img){
   SESSION.unshift({ id: rec.obs_id, at: rec.ts, barcode: rec.barcode, name: name || rec.barcode,
-                    img: img || '', price: rec.price, flag: rec.flag, store: S.store });
+                    img: img || '', price: rec.price, flag: rec.flag, store: S.store,
+                    // rec.min_qty only exists on a wholesale row (buildObs omits it otherwise);
+                    // stored here too, so a reload of the log still shows what ฿45 buys.
+                    minQty: rec.min_qty || null });
   SESSION = SESSION.slice(0, 100);
   saveSession(); renderLog();
 }
@@ -930,13 +963,15 @@ function renderLog(){
     const act = held
       ? `<button class="undo" data-undo="${esc(r.id)}">ยกเลิก ${left}</button>`
       : `<span class="sent${st === 'queued' ? ' queued' : ''}">${st === 'queued' ? 'รอส่ง' : st === 'sending' ? 'กำลังส่ง' : 'ส่งแล้ว'}</span>`;
+    const amtTxt = (r.flag === 'wholesale' && r.minQty)
+      ? `${esc(fmtPrice(r.price))} · ขั้นต่ำ ${esc(r.minQty)}` : esc(fmtPrice(r.price));
     return `<div class="logcard ${esc(r.flag)}">
       ${r.img ? `<img src="${esc(r.img)}" alt="" onerror="this.style.visibility='hidden'">` : ''}
       <div class="mid">
         <div class="nm">${esc(r.name)}</div>
         <div class="sub">${esc(hhmm(r.at))} · ${esc(r.store || '')} · ${esc(r.barcode)}</div>
       </div>
-      <div class="amt2">${esc(fmtPrice(r.price))}</div>
+      <div class="amt2">${amtTxt}</div>
       <div class="act">${act}</div>
     </div>`;
   }).join('');
@@ -1013,6 +1048,7 @@ $('tabCapture').addEventListener('click', () => {
 $('codeInput').addEventListener('keydown', e => { if (e.key === 'Enter') onScan(e.target.value); });
 $('pad').addEventListener('click', e => { const k = e.target.dataset.k; if (k) key(k); });
 $('flagRow').addEventListener('click', e => { const f = e.target.dataset.f; if (f) setFlag(f); });
+$('qtyInput').addEventListener('input', e => { S.qty = e.target.value; renderPrice(); });
 $('missKeep').addEventListener('click', () => {
   $('missForm').classList.remove('hidden');
   $('missActions').classList.add('hidden');
