@@ -35,7 +35,11 @@ main{padding:16px}
 .pcard{background:var(--card); border:1px solid var(--line); border-top:3px solid var(--tag); border-radius:var(--r);
   box-shadow:var(--shadow); overflow:hidden; cursor:pointer; transition:transform .12s}
 .pcard:hover{transform:translateY(-2px)}
-.pcard .body{padding:12px 13px}
+.pcard .body{padding:12px 13px; display:flex; gap:10px; align-items:flex-start}
+.pcard .info{flex:1; min-width:0}
+.pcard .thumb{width:48px; height:48px; flex:none; background:#fff; border:1px solid var(--line); border-radius:8px;
+  display:grid; place-items:center; overflow:hidden}
+.pcard .thumb img{width:100%; height:100%; object-fit:contain}
 .pcard .brand{font-size:10.5px; font-weight:800; letter-spacing:.8px; color:var(--tag-deep); text-transform:uppercase; min-height:13px}
 .pcard .nm{font-size:13.5px; font-weight:700; line-height:1.3; margin:2px 0;
   display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
@@ -67,6 +71,9 @@ th{text-align:left; font-size:11px; letter-spacing:.6px; text-transform:uppercas
 td{padding:9px 8px; border-bottom:1px solid var(--line)}
 td.num,th.num{text-align:right; font-family:'IBM Plex Mono',monospace}
 tr.rowbtn{cursor:pointer} tr.rowbtn:hover td{background:var(--paper)}
+th[data-key]{cursor:pointer; user-select:none}
+th[data-key]:hover{color:var(--ink)}
+th[data-key] .sortarrow{margin-left:3px; display:inline-block}
 .brand-pick{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px; align-items:center}
 .brand-pick select{padding:11px 13px; font-size:15px; font-weight:600; border:1.5px solid var(--line);
   border-radius:11px; background:var(--card); min-width:170px}
@@ -159,7 +166,14 @@ footer button:disabled{opacity:.5; cursor:default}
     </div>
     <div class="panel">
       <div class="eyebrow">แบรนด์ในหมวดนี้ (คลิกเพื่อดูสินค้า)</div>
-      <table><thead><tr><th>แบรนด์</th><th class="num">สินค้า</th><th class="num">ต่ำสุด</th><th class="num">มัธยฐาน</th><th class="num">สูงสุด</th><th class="num">ลดโปรฯ เฉลี่ย</th></tr></thead>
+      <table><thead><tr id="catBrandHead">
+        <th data-key="brand">แบรนด์<span class="sortarrow"></span></th>
+        <th class="num" data-key="n">สินค้า<span class="sortarrow"></span></th>
+        <th class="num" data-key="lo">ต่ำสุด<span class="sortarrow"></span></th>
+        <th class="num" data-key="med">มัธยฐาน<span class="sortarrow"></span></th>
+        <th class="num" data-key="hi">สูงสุด<span class="sortarrow"></span></th>
+        <th class="num" data-key="disc">ลดโปรฯ เฉลี่ย<span class="sortarrow"></span></th>
+      </tr></thead>
       <tbody id="catBrandRows"></tbody></table>
     </div>
   </section>
@@ -212,6 +226,7 @@ const API_URL = "https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q
 const NET_TIMEOUT = 12000;
 const SUMMARY_TIMEOUT = 25000;
 const PRICES_TIMEOUT = 20000;
+const IMAGES_TIMEOUT = 15000;
 const REBUILD_TIMEOUT = 130000;   // buildAnalysis() re-reads 26k+ products / 45k+ observations — 30-60s is normal
 
 /* ================= tiny DOM / format helpers ================= */
@@ -375,6 +390,14 @@ async function idbSet(key, val){
 /* ================= STATE ================= */
 let P = [], PBY_BC = new Map(), STORES = [], curTab = 'search', c1Sel = null, c2Sel = null, c3Sel = null;
 let started = false, detailReq = 0;
+// Sort state for the หมวดหมู่ brand table — a plain module var (not `ls`) so it need not survive
+// a reload, but it must survive re-filtering rows via the c1/c2/c3 chips within this page life.
+// Default reproduces the table's original hard-coded order (most products first).
+let catSort = { key: 'n', dir: -1 };
+// ?action=images is fetched once, lazily, after the first successful render (see start()).
+// IMG holds the last-loaded payload so it can be re-applied to P every time decode() rebuilds it
+// (a plain refresh/rebuild replaces P entirely, which would otherwise drop the img field).
+let IMG = null, imgFetchedOnce = false, imgLenWarned = false, SUMMARY_GENERATED = null;
 
 /**
  * Decode the ?action=summary payload. Everything here is already aggregated server-side —
@@ -394,11 +417,62 @@ function decode(d){
       bc: String(bc), brand, item: item2, sku: sku2, c1, c2, c3,
       needs: needsInfo01 === 1,
       ref: ref || 0, lo: lo || 0, hi: hi || 0, ns: ns || 0, pd: pd || 0,
+      img: '',   // filled in by applyImagesToP() once ?action=images has loaded, if ever
       words: (brand + ' ' + item2 + ' ' + sku2 + ' ' + c3).toLowerCase().normalize('NFC')
         .split(/[^a-z0-9\u0E00-\u0E7F.+]+/).filter(Boolean)
     };
   });
   PBY_BC = new Map(P.map(p => [p.bc, p]));
+}
+
+/**
+ * Re-attach the cached/fetched ?action=images payload to the current P array. Called after every
+ * decode() (P is rebuilt from scratch each time) so images survive refresh/rebuild, and again
+ * once the images payload itself first arrives. img[i] is index-aligned to p[i] from ?action=summary
+ * — there are no barcode keys — so a length mismatch means the two payloads were built from
+ * different generations and the index join can no longer be trusted: applying it anyway would
+ * attach the wrong picture to every product, which is worse than showing none, so it is skipped.
+ */
+function applyImagesToP(){
+  if(!IMG) return;
+  if(IMG.img.length !== P.length){
+    if(!imgLenWarned){
+      console.warn(`[images] length mismatch (img=${IMG.img.length}, p=${P.length}) — skipping to avoid mis-attached pictures`);
+      imgLenWarned = true;
+    }
+    return;
+  }
+  for(let i=0; i<P.length; i++){
+    const raw = IMG.img[i];
+    P[i].img = raw ? raw.replace('~', IMG.cdn) : '';
+  }
+}
+
+/**
+ * Fires once, after the first successful render, and never blocks or delays it — see start().
+ * A cache hit is applied immediately; a background refetch only happens if the cached payload's
+ * `generated` stamp differs from the summary's (or nothing was cached at all). Any failure here
+ * is silent: the page keeps behaving exactly as it does today, cards simply have no picture.
+ */
+async function loadImagesBackground(){
+  if(imgFetchedOnce) return;
+  imgFetchedOnce = true;
+  let cached = null;
+  try { cached = await idbGet('images'); } catch(err) { cached = null; }
+  if(cached && Array.isArray(cached.img) && typeof cached.cdn === 'string'){
+    IMG = cached;
+    applyImagesToP();
+    renderCurrent();
+  }
+  if(!cached || cached.generated !== SUMMARY_GENERATED){
+    const d = await api('?action=images', {}, IMAGES_TIMEOUT);
+    if(d && d.ok && Array.isArray(d.img) && typeof d.cdn === 'string'){
+      IMG = d;
+      applyImagesToP();
+      renderCurrent();
+      idbSet('images', d);   // best-effort write; a failure here must never break anything
+    }
+  }
 }
 
 /* ================= LOAD =================
@@ -435,12 +509,15 @@ async function boot(forceProgress){
 }
 function start(d, fromCache){
   decode(d);
+  SUMMARY_GENERATED = d.generated;
+  applyImagesToP();   // re-attach any already-loaded images — decode() just rebuilt P from scratch
   $("footInfo").textContent = `${P.length.toLocaleString()} สินค้า · ${STORES.length.toLocaleString()} ร้าน · ข้อมูล ${esc(d.generated)}${fromCache ? ' (แคช)' : ''}`;
   if(!started){
     started = true;
     $("loading").classList.add('hidden');
     buildCat(); buildBrand();
     tab(ls.get('viewerTab', 'search'));
+    loadImagesBackground();   // fire-and-forget, once, only after this first successful render
   } else {
     renderCurrent();
   }
@@ -518,12 +595,20 @@ function renderSearch(q){
   $("results").innerHTML = res.slice(0,60).map(p=>`
     <div class="pcard" data-bc="${esc(p.bc)}">
       <div class="body">
-        <div class="brand">${esc(p.brand)||'&nbsp;'}</div>
-        <div class="nm">${esc(p.item)||esc(p.bc)}</div>
-        <div class="sku">${esc(p.sku)||' '}</div>
-        <div class="pr">${priceLine(p)}</div>
+        ${p.img ? `<div class="thumb"><img class="thumb-img" alt="" src="${esc(p.img)}"></div>` : ''}
+        <div class="info">
+          <div class="brand">${esc(p.brand)||'&nbsp;'}</div>
+          <div class="nm">${esc(p.item)||esc(p.bc)}</div>
+          <div class="sku">${esc(p.sku)||' '}</div>
+          <div class="pr">${priceLine(p)}</div>
+        </div>
       </div>
     </div>`).join('');
+  // A dead CDN URL must never show a broken-image icon — drop the whole thumb, same approach as
+  // the detail sheet's #dImg. At most 60 cards are ever in the DOM, so this is cheap.
+  $("results").querySelectorAll('.thumb-img').forEach(im=>{
+    im.addEventListener('error', () => { im.closest('.thumb')?.remove(); }, { once:true });
+  });
 }
 
 /* ================= DETAIL ================= */
@@ -630,12 +715,48 @@ function renderCat(){
   $("ladderX").innerHTML = `<span>${fmt(lo)}</span><span>${fmt(Math.round((lo+cap)/2))}</span><span>${fmt(Math.round(cap))}+</span>`;
   const bmap={};
   items.forEach(p=>{ (bmap[p.brand]=bmap[p.brand]||[]).push(p); });
-  $("catBrandRows").innerHTML = Object.entries(bmap).sort((a,b)=>b[1].length-a[1].length).slice(0,30).map(([b,ps])=>{
+  let rows = Object.entries(bmap).map(([b,ps])=>{
     const pr = ps.map(p=>p.ref);
     const dd = ps.filter(p=>p.pd>0).map(p=>p.pd);
-    const disc = dd.length ? Math.round(dd.reduce((a,c)=>a+c,0)/dd.length*100)+'%' : '—';
-    return `<tr class="rowbtn" data-brand="${esc(b)}"><td>${esc(b)}</td><td class="num">${ps.length}</td><td class="num">${fmt(Math.min(...pr))}</td><td class="num">${fmt(med(pr))}</td><td class="num">${fmt(Math.max(...pr))}</td><td class="num">${disc}</td></tr>`;
-  }).join('');
+    return {
+      brand: b, n: ps.length,
+      lo: Math.min(...pr), med: med(pr), hi: Math.max(...pr),
+      disc: dd.length ? dd.reduce((a,c)=>a+c,0)/dd.length : null   // fraction 0-1; null = no promo observed
+    };
+  });
+  rows.sort((a,b)=>b.n-a.n);          // which 30 brands get shown is always "most products first"…
+  rows = rows.slice(0,30);
+  rows.sort((a,b)=>cmpCatRows(a,b));  // …but the order they're *displayed* in follows the active sort
+  $("catBrandRows").innerHTML = rows.map(r=>
+    `<tr class="rowbtn" data-brand="${esc(r.brand)}"><td>${esc(r.brand)}</td><td class="num">${r.n}</td><td class="num">${fmt(r.lo)}</td><td class="num">${fmt(r.med)}</td><td class="num">${fmt(r.hi)}</td><td class="num">${r.disc==null?'—':Math.round(r.disc*100)+'%'}</td></tr>`
+  ).join('');
+  updateCatSortHeaders();
+}
+/**
+ * Comparator for the หมวดหมู่ brand table. Numeric columns sort numerically (never as strings —
+ * ฿9 vs ฿1000 as text would put 9 after 1000); brand sorts as text via localeCompare. A row with
+ * no data for the active column (null, or 0 for a price/discount column that should never
+ * legitimately be zero) is pushed to the very end regardless of sort direction, rather than
+ * sorting as if it were the cheapest.
+ */
+function cmpCatRows(a, b){
+  const { key, dir } = catSort;
+  if(key === 'brand') return dir * a.brand.localeCompare(b.brand, 'th');
+  const av = a[key], bv = b[key], aNil = (av==null || av===0), bNil = (bv==null || bv===0);
+  if(aNil && bNil) return 0;
+  if(aNil) return 1;
+  if(bNil) return -1;
+  return dir * (av - bv);
+}
+function setCatSort(key){
+  catSort = (catSort.key === key) ? { key, dir: catSort.dir * -1 } : { key, dir: 1 };
+  renderCat();
+}
+function updateCatSortHeaders(){
+  document.querySelectorAll('#catBrandHead th[data-key]').forEach(th=>{
+    const arrow = th.querySelector('.sortarrow');
+    if(arrow) arrow.textContent = th.dataset.key === catSort.key ? (catSort.dir===1 ? '▲' : '▼') : '';
+  });
 }
 function jumpSearch(b){ tab('search'); $("q").value=b; renderSearch(b); }
 
@@ -716,6 +837,7 @@ function initEvents(){
   $("c2Chips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setC2(b.dataset.val); });
   $("c3Chips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setC3(b.dataset.val); });
   $("catBrandRows").addEventListener('click', e=>{ const r=e.target.closest('tr[data-brand]'); if(r) jumpSearch(r.dataset.brand); });
+  $("catBrandHead").addEventListener('click', e=>{ const th=e.target.closest('th[data-key]'); if(th) setCatSort(th.dataset.key); });
 
   $("bCat").addEventListener('change', ()=>{ fillBrandSelects(); renderCompare(); });
   $("brandA").addEventListener('change', renderCompare);
