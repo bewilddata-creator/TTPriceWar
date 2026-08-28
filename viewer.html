@@ -102,6 +102,21 @@ th[data-key] .sortarrow{margin-left:3px; display:inline-block}
 .flagpill.promo{background:var(--amber-bg); color:var(--amber)}
 .flagpill.exp{background:#FBEFE9; color:var(--warn)}
 .close-x{margin-left:auto; font-size:22px; color:var(--mut); padding:4px 8px}
+/* ---- หมวดหมู่ brand modal: lists one brand's products within the active category filter ---- */
+#bmOv{position:fixed; inset:0; background:rgba(23,25,28,.5); z-index:39; display:none; overflow:auto; padding:20px 14px}
+#bmOv .sheet{max-width:900px; margin:0 auto; background:var(--card); border-radius:18px; box-shadow:var(--shadow);
+  max-height:calc(100dvh - 40px); display:flex; flex-direction:column; overflow:hidden}
+#bmOv .bm-head{display:flex; align-items:flex-start; gap:12px; padding:18px 18px 12px; border-bottom:1px solid var(--line); flex:none}
+#bmOv .bm-brandname{font-size:18px; font-weight:800}
+#bmOv .bm-meta{font-size:12.5px; color:var(--mut); margin-top:3px}
+#bmOv .bm-body{overflow:auto; padding:0 18px 18px}
+#bmOv table{margin-top:10px}
+#bmOv .bm-thumb{width:44px; height:44px; flex:none; background:#fff; border:1px solid var(--line); border-radius:8px;
+  display:grid; place-items:center; overflow:hidden}
+#bmOv .bm-thumb img{width:100%; height:100%; object-fit:contain}
+#bmOv .bm-line-mut{font-size:11px; color:var(--mut)}
+#bmOv .bm-item{font-size:13.5px; font-weight:700; margin:1px 0}
+#bmOv .bm-more{padding:12px 2px; font-size:12.5px; color:var(--mut); text-align:center}
 .hidden{display:none!important}
 footer{position:fixed; bottom:0; left:0; right:0; background:var(--card); border-top:1px solid var(--line);
   padding:8px 16px 9px; font-size:12px; color:var(--mut); z-index:30; display:flex; flex-direction:column; gap:3px; align-items:center}
@@ -204,6 +219,25 @@ footer button:disabled{opacity:.5; cursor:default}
       <div class="eyebrow">ราคาล่าสุดรายร้าน</div>
       <table><thead><tr><th>ร้าน</th><th>วันที่เห็น</th><th class="num">ราคา</th></tr></thead>
       <tbody id="dRows"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<div id="bmOv">
+  <div class="sheet">
+    <div class="bm-head">
+      <div>
+        <div class="bm-brandname" id="bmBrand"></div>
+        <div class="bm-meta" id="bmMeta"></div>
+      </div>
+      <div class="close-x" id="bmClose" tabindex="0" role="button" aria-label="ปิด">✕</div>
+    </div>
+    <div class="bm-body">
+      <table><thead><tr>
+        <th>รูป</th><th>สินค้า</th><th class="num">ราคากลาง</th><th class="num">ช่วงราคา</th><th class="num">ร้าน</th><th class="num">โปรฯ</th>
+      </tr></thead>
+      <tbody id="bmRows"></tbody></table>
+      <div class="bm-more hidden" id="bmMore"></div>
     </div>
   </div>
 </div>
@@ -394,6 +428,9 @@ let started = false, detailReq = 0;
 // a reload, but it must survive re-filtering rows via the c1/c2/c3 chips within this page life.
 // Default reproduces the table's original hard-coded order (most products first).
 let catSort = { key: 'n', dir: -1 };
+// The หมวดหมู่ header label, recomputed every renderCat() — the brand modal reuses this exact
+// string so it never disagrees with what the category panel itself is showing.
+let catLabelCur = '';
 // ?action=images is fetched once, lazily, after the first successful render (see start()).
 // IMG holds the last-loaded payload so it can be re-applied to P every time decode() rebuilds it
 // (a plain refresh/rebuild replaces P entirely, which would otherwise drop the img field).
@@ -694,6 +731,7 @@ function renderCat(){
   const all = catItems();
   const items = all.filter(p=>p.ref);
   const label = c1Sel+' › '+c2Sel+(c3Sel!=='__ALL__'?' › '+c3Sel:'');
+  catLabelCur = label;
   $("catTitle").textContent = label;
   if(!items.length){
     $("catStats").innerHTML = `<div class="stat"><b>${all.length}</b><span>สินค้า (ยังไม่มีราคา)</span></div>`;
@@ -758,7 +796,70 @@ function updateCatSortHeaders(){
     if(arrow) arrow.textContent = th.dataset.key === catSort.key ? (catSort.dir===1 ? '▲' : '▼') : '';
   });
 }
-function jumpSearch(b){ tab('search'); $("q").value=b; renderSearch(b); }
+/* ---- หมวดหมู่ brand modal ----
+   Opened from a brand row in the หมวดหมู่ table. Deliberately does NOT touch the tab or the
+   c1/c2/c3 selection — it lists that brand's products within the category the user already
+   drilled into, using catItems() (the exact predicate renderCat() itself uses) so the modal
+   can never disagree with the table behind it about what belongs in the category. */
+const BM_CAP = 300;
+function sortBrandModalRows(arr){
+  // ref DESCENDING, with no-price products (ref===0 — nothing has ever been observed) pushed
+  // to the end regardless of direction: a product with no price is not "the cheapest".
+  return [...arr].sort((a,b)=>{
+    const az = a.ref===0, bz = b.ref===0;
+    if(az && bz) return 0;
+    if(az) return 1;
+    if(bz) return -1;
+    return b.ref - a.ref;
+  });
+}
+function brandModalRowHtml(p){
+  const range = (!p.lo && !p.hi) ? '—' : (p.lo===p.hi ? fmt(p.lo) : `${fmt(p.lo)}–${fmt(p.hi)}`);
+  return `<tr class="rowbtn" data-bc="${esc(p.bc)}">
+    <td>${p.img ? `<div class="bm-thumb"><img class="bm-thumb-img" alt="" src="${esc(p.img)}"></div>` : ''}</td>
+    <td>
+      <div class="bm-line-mut">${esc(p.brand)||'&nbsp;'}</div>
+      <div class="bm-item">${esc(p.item)||esc(p.bc)}</div>
+      ${p.sku ? `<div class="bm-line-mut">${esc(p.sku)}</div>` : ''}
+    </td>
+    <td class="num">${fmt(p.ref)}</td>
+    <td class="num">${range}</td>
+    <td class="num">${p.ns}</td>
+    <td class="num">${p.pd>0 ? Math.round(p.pd*100)+'%' : ''}</td>
+  </tr>`;
+}
+let bmLastFocus = null;
+function openBrandModal(brand){
+  const rows = sortBrandModalRows(catItems().filter(p=>p.brand===brand));
+  const shown = rows.slice(0, BM_CAP);
+  $("bmBrand").textContent = brand;
+  $("bmMeta").textContent = `${catLabelCur} · ${rows.length.toLocaleString()} สินค้า`;
+  $("bmRows").innerHTML = shown.map(brandModalRowHtml).join('');
+  // Same "drop the thumb rather than show a broken-image icon" approach as the search grid.
+  $("bmRows").querySelectorAll('.bm-thumb-img').forEach(im=>{
+    im.addEventListener('error', () => { im.closest('.bm-thumb')?.remove(); }, { once:true });
+  });
+  const hidden = rows.length - shown.length;
+  $("bmMore").classList.toggle('hidden', hidden<=0);
+  $("bmMore").textContent = hidden>0 ? `แสดง ${BM_CAP} รายการแรก — ยังมีอีก ${hidden.toLocaleString()} รายการที่ไม่ได้แสดง` : '';
+  bmLastFocus = document.activeElement;
+  $("bmOv").style.display = 'block';
+  requestAnimationFrame(() => $("bmClose").focus());
+}
+function closeBrandModal(){
+  $("bmOv").style.display = 'none';
+  if(bmLastFocus && typeof bmLastFocus.focus === 'function') bmLastFocus.focus();
+  bmLastFocus = null;
+}
+function isBrandModalOpen(){ return $("bmOv").style.display === 'block'; }
+function isDetailOpen(){ return $("ov").style.display === 'block'; }
+function trapFocus(e, container){
+  const f = container.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+  if(!f.length) return;
+  const first = f[0], last = f[f.length-1];
+  if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+  else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+}
 
 /* ================= BRANDS ================= */
 function buildBrand(){
@@ -836,7 +937,7 @@ function initEvents(){
   $("c1Chips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setC1(b.dataset.val); });
   $("c2Chips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setC2(b.dataset.val); });
   $("c3Chips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setC3(b.dataset.val); });
-  $("catBrandRows").addEventListener('click', e=>{ const r=e.target.closest('tr[data-brand]'); if(r) jumpSearch(r.dataset.brand); });
+  $("catBrandRows").addEventListener('click', e=>{ const r=e.target.closest('tr[data-brand]'); if(r) openBrandModal(r.dataset.brand); });
   $("catBrandHead").addEventListener('click', e=>{ const th=e.target.closest('th[data-key]'); if(th) setCatSort(th.dataset.key); });
 
   $("bCat").addEventListener('change', ()=>{ fillBrandSelects(); renderCompare(); });
@@ -845,6 +946,24 @@ function initEvents(){
 
   $("closeOv").addEventListener('click', closeOverlay);
   $("ov").addEventListener('click', e=>{ if(e.target.id==='ov') closeOverlay(); });
+
+  $("bmClose").addEventListener('click', closeBrandModal);
+  $("bmClose").addEventListener('keydown', e=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); closeBrandModal(); } });
+  $("bmOv").addEventListener('click', e=>{ if(e.target.id==='bmOv') closeBrandModal(); });
+  $("bmRows").addEventListener('click', e=>{ const r=e.target.closest('tr[data-bc]'); if(r) openDetail(r.dataset.bc); });
+
+  // Escape closes whichever overlay is on top (detail sheet, if open, sits above the brand
+  // modal — see the z-index comment on #bmOv/#ov — so it must close first). Tab is trapped
+  // inside the brand modal only while it is the topmost overlay; the detail sheet has never
+  // had its own trap and this change does not add one.
+  document.addEventListener('keydown', e=>{
+    if(e.key === 'Escape'){
+      if(isDetailOpen()) closeOverlay();
+      else if(isBrandModalOpen()) closeBrandModal();
+    } else if(e.key === 'Tab' && isBrandModalOpen() && !isDetailOpen()){
+      trapFocus(e, $("bmOv"));
+    }
+  });
 
   $("loading").addEventListener('click', e=>{ if(e.target.closest('#retryBtn')) boot(); });
 }
