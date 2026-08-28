@@ -144,7 +144,19 @@ table.gridtable tbody td{padding:3px 6px; border-bottom:1px solid var(--line)}
 
 /* ---- review (เติมข้อมูลสินค้า) ---- */
 .rv-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px}
+.rv-head-right{display:flex; align-items:center; gap:16px}
 .rv-count{font-size:13px; font-weight:700; color:var(--mut)}
+/* ---- review resting state (before/without a loaded queue) ---- */
+.rv-rest{display:flex; flex-direction:column; align-items:flex-start; gap:16px; padding:30px 4px}
+.rv-rest-text{margin:0; max-width:560px; font-size:13.5px; line-height:1.65; color:var(--mut)}
+.rv-rest-text.err{color:var(--warn); font-weight:600}
+#reviewFetchBtn{background:var(--ink); color:#fff; padding:13px 24px; border-radius:12px;
+  font-weight:700; font-size:15px; display:inline-flex; align-items:center; gap:10px}
+#reviewFetchBtn:disabled{opacity:.55; cursor:default}
+.rv-spinner{width:14px; height:14px; border-radius:50%; flex:none;
+  border:2px solid rgba(255,255,255,.4); border-top-color:#fff; animation:rv-spin .7s linear infinite}
+@keyframes rv-spin{to{transform:rotate(360deg)}}
+.rv-cap-note{font-size:11.5px; font-weight:600; color:var(--amber); line-height:1.5}
 .rv-layout{display:grid; grid-template-columns:280px 1fr; gap:16px; align-items:start}
 .rv-sidebar{display:flex; flex-direction:column; gap:10px}
 .rv-list{display:flex; flex-direction:column; gap:6px; max-height:calc(100dvh - 260px); overflow-y:auto}
@@ -319,13 +331,26 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
   <section id="reviewScreen" class="card hidden">
     <div class="rv-head">
       <div class="eyebrow" style="margin:0">เติมข้อมูลสินค้า</div>
-      <div class="rv-count" id="reviewCount">เหลือ 0 รายการ</div>
+      <div class="rv-head-right">
+        <div class="rv-count hidden" id="reviewCount"></div>
+        <button type="button" class="linkbtn hidden" id="reviewReloadBtn">โหลดใหม่</button>
+      </div>
     </div>
-    <div class="rv-layout">
+
+    <!-- Resting state: shown before the first search, while it runs, on failure, and when the
+         search comes back with zero results — the queue layout below only appears once there
+         is something in it to show. See fetchReviewQueue() / renderReviewScreen(). -->
+    <div class="rv-rest" id="reviewRest">
+      <p class="rv-rest-text" id="reviewRestText">หน้านี้แสดงรายการสินค้าที่บันทึกจากภาคสนามแล้วยังไม่มียี่ห้อ หมวดหมู่ หรือขนาด — กดปุ่มด้านล่างเพื่อค้นหารายการที่ต้องเติมข้อมูล (การค้นหาอาจใช้เวลาสักครู่เพราะต้องสแกนสินค้าทั้งหมดในระบบ)</p>
+      <button type="button" id="reviewFetchBtn">ค้นหาสินค้าที่ยังไม่มีข้อมูล</button>
+    </div>
+
+    <div class="rv-layout hidden" id="reviewLayout">
       <div class="rv-sidebar">
         <input type="text" class="tin" id="reviewSearch" autocomplete="off" autocorrect="off"
                spellcheck="false" placeholder="ค้นหาบาร์โค้ด / ยี่ห้อ / ชื่อสินค้า…">
-        <div class="rv-list" id="reviewList"><div class="empty-note">กำลังโหลด…</div></div>
+        <div class="rv-cap-note hidden" id="reviewCapNote">พบครบ 300 รายการซึ่งเป็นจำนวนสูงสุดต่อครั้ง — อาจมีรายการค้างมากกว่านี้ เติมข้อมูลบางส่วนแล้วกด "โหลดใหม่" เพื่อดูรายการถัดไป</div>
+        <div class="rv-list" id="reviewList"></div>
       </div>
       <div class="rv-formcard" id="reviewFormWrap">
         <div class="empty-note">เลือกสินค้าทางซ้ายเพื่อแก้ไข</div>
@@ -439,6 +464,19 @@ function setSubmitStatus(msg, isErr){
   const el = $('submitStatusText');
   el.textContent = msg;
   el.classList.toggle('err', !!isErr);
+}
+
+/** Turns a failed api() response into a Thai message that tells apart a genuine network failure
+ *  (api() caught a timeout/CORS/offline error and returned { offline: true }) from the server
+ *  answering fine but not recognising the action — doGet() falls back to { ok:true, msg:"Price
+ *  Scout API vNN" } for any action it does not know, which happens when the deployed backend
+ *  predates an endpoint this page calls. The two need different next steps from the admin, so
+ *  they must not collapse into the same generic error text. */
+function backendMsg(d, fallback){
+  if (d && d.offline) return 'ไม่มีสัญญาณ — ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่';
+  if (d && d.ok && typeof d.msg === 'string') return `${fallback} — เซิร์ฟเวอร์รุ่นนี้ยังไม่รองรับคำสั่งนี้`;
+  if (d && d.error) return `${fallback} (${d.error})`;
+  return fallback;
 }
 
 /* ================= STORES =================
@@ -1141,35 +1179,73 @@ async function submitBatch(){
 }
 
 /* ================= REVIEW (เติมข้อมูลสินค้า) =================
-   Products captured in the field with no details, fetched lazily on the tab's first open (not
-   at page load — this list can run to hundreds of rows with images). needsinfo's `img` has the
+   Products captured in the field with no details. needsinfo scans the whole Products sheet and
+   can take several seconds, so — unlike the other tabs' lazy-loads — this data is fetched only
+   on an explicit button press, never automatically on opening the tab. needsinfo's `img` has the
    CDN host replaced by "~" (see index.html's own lookup handling) — it must be expanded with
    the payload's top-level `cdn` before it is usable as a src, or thumbnails silently 404. */
 const RV = {
-  loaded: false, loading: false, cdn: '',
+  state: 'idle',                      // 'idle' | 'loading' | 'loaded' | 'empty' | 'error'
+  errorMsg: '', capped: false,        // capped: needsinfo returned exactly the requested limit
+  cdn: '',
   items: [],                          // [{barcode, brand, item, sku, size, unit, c1, c2, c3, img, first_seen}]
   vocab: { brands: [], tree: {} },
   filterText: '', selectedBarcode: null,
   baseline: null                      // the values loaded for the selected product, to diff on save
 };
+const REVIEW_NEEDSINFO_LIMIT = 300;   // server default/cap is also 300; kept explicit here for the "capped" check
+const REVIEW_REST_TEXT = 'หน้านี้แสดงรายการสินค้าที่บันทึกจากภาคสนามแล้วยังไม่มียี่ห้อ หมวดหมู่ หรือขนาด — กดปุ่มด้านล่างเพื่อค้นหารายการที่ต้องเติมข้อมูล (การค้นหาอาจใช้เวลาสักครู่เพราะต้องสแกนสินค้าทั้งหมดในระบบ)';
+const REVIEW_EMPTY_TEXT = 'ไม่มีสินค้าที่รอเติมข้อมูล — ทุกรายการมีข้อมูลครบแล้ว';
 
-async function ensureReviewLoaded(){
-  if (RV.loaded || RV.loading) return;
-  RV.loading = true;
-  renderReviewList();
-  const [ni, vo] = await Promise.all([ api('?action=needsinfo&limit=300'), api('?action=vocab') ]);
-  RV.loading = false;
+/** The only place ?action=needsinfo (and, riding along in parallel, ?action=vocab for the edit
+ *  form's dropdowns) is ever fetched — triggered by "ค้นหาสินค้าที่ยังไม่มีข้อมูล" or "โหลดใหม่",
+ *  never by switching to this tab. Fetching the two in parallel (rather than needsinfo then
+ *  vocab) matters because needsinfo alone can take several seconds; vocab is cached server-side
+ *  for an hour so it is usually the fast half of the pair and must not be serialised behind it. */
+async function fetchReviewQueue(){
+  if (RV.state === 'loading') return;   // the button is disabled while loading, but guard anyway
+  RV.state = 'loading';
+  renderReviewScreen();
+  const [ni, vo] = await Promise.all([
+    api(`?action=needsinfo&limit=${REVIEW_NEEDSINFO_LIMIT}`), api('?action=vocab')
+  ]);
   if (!ni.ok || !Array.isArray(ni.p)) {
-    toast(backendMsg(ni, 'โหลดรายการค้างไม่สำเร็จ'), true);
-    renderReviewList();
-    return;   // RV.loaded stays false so switching back to this tab retries
+    RV.state = 'error';
+    RV.errorMsg = backendMsg(ni, 'ค้นหาสินค้าที่ยังไม่มีข้อมูลไม่สำเร็จ');
+    renderReviewScreen();
+    return;   // button stays enabled (see renderReviewRest) so the admin can just try again
   }
   RV.items = ni.p;
   RV.cdn = ni.cdn || '';
+  RV.capped = ni.p.length === REVIEW_NEEDSINFO_LIMIT;
   if (vo.ok) RV.vocab = { brands: vo.brands || [], tree: vo.tree || {} };
-  else toast(backendMsg(vo, 'โหลดรายการยี่ห้อ/หมวดหมู่ไม่สำเร็จ'), true);
-  RV.loaded = true;
+  else toast(backendMsg(vo, 'โหลดรายการยี่ห้อ/หมวดหมู่ไม่สำเร็จ'), true);   // not fatal — the queue itself still loaded
+  RV.state = RV.items.length ? 'loaded' : 'empty';
+  renderReviewScreen();
   selectProduct(RV.items.length ? RV.items[0].barcode : null);
+}
+
+/** Toggles between the resting panel (idle / loading / error / zero-results) and the actual
+ *  queue layout, and keeps the count + reload button in sync. Called on every state change. */
+function renderReviewScreen(){
+  const showLayout = RV.state === 'loaded';
+  $('reviewRest').classList.toggle('hidden', showLayout);
+  $('reviewLayout').classList.toggle('hidden', !showLayout);
+  $('reviewCount').classList.toggle('hidden', !showLayout);
+  $('reviewReloadBtn').classList.toggle('hidden', !showLayout);
+  renderReviewRest();
+}
+
+function renderReviewRest(){
+  const textEl = $('reviewRestText'), btn = $('reviewFetchBtn');
+  textEl.classList.toggle('err', RV.state === 'error');
+  if (RV.state === 'error') textEl.textContent = RV.errorMsg;
+  else if (RV.state === 'empty') textEl.textContent = REVIEW_EMPTY_TEXT;
+  else textEl.textContent = REVIEW_REST_TEXT;
+  btn.disabled = RV.state === 'loading';
+  btn.innerHTML = RV.state === 'loading'
+    ? '<span class="rv-spinner" aria-hidden="true"></span>กำลังค้นหา…'
+    : 'ค้นหาสินค้าที่ยังไม่มีข้อมูล';
 }
 
 function reviewImgSrc(p){ return p.img ? p.img.replace('~', RV.cdn || '') : ''; }
@@ -1184,9 +1260,9 @@ function reviewFilteredItems(){
 }
 
 function renderReviewList(){
-  $('reviewCount').textContent = RV.loading ? 'กำลังโหลด…' : `เหลือ ${RV.items.length} รายการ`;
+  $('reviewCount').textContent = `เหลือ ${RV.items.length} รายการ`;
+  $('reviewCapNote').classList.toggle('hidden', !RV.capped);
   const wrap = $('reviewList');
-  if (RV.loading) { wrap.innerHTML = '<div class="empty-note">กำลังโหลด…</div>'; return; }
   const items = reviewFilteredItems();
   if (!items.length) {
     wrap.innerHTML = `<div class="empty-note">${RV.items.length ? 'ไม่พบรายการที่ค้นหา' : 'ไม่มีรายการค้าง'}</div>`;
@@ -1759,10 +1835,12 @@ $('selGridBody').addEventListener('click', e => {
 $('submitBtn').addEventListener('click', submitBatch);
 
 $('tabEntry').addEventListener('click', () => showScreen('entry'));
-$('tabReview').addEventListener('click', () => { showScreen('review'); ensureReviewLoaded(); });
+$('tabReview').addEventListener('click', () => showScreen('review'));
 $('tabStores').addEventListener('click', () => { showScreen('stores'); ensureStoresLoaded(); });
 
 /* ---- review tab wiring ---- */
+$('reviewFetchBtn').addEventListener('click', fetchReviewQueue);
+$('reviewReloadBtn').addEventListener('click', fetchReviewQueue);
 $('reviewSearch').addEventListener('input', () => {
   RV.filterText = $('reviewSearch').value;
   renderReviewList();
