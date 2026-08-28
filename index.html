@@ -204,6 +204,23 @@ main{flex:1; padding:12px; display:flex; flex-direction:column; gap:10px; paddin
 .bar{height:5px; border-radius:99px; background:var(--line); margin-top:5px; overflow:hidden}
 .bar span{display:block; height:100%; background:var(--tag); border-radius:99px}
 
+/* Name-search results — same tappable-row idiom as the store combo list, but laid out
+   inline under the search box rather than a floating dropdown, and scrollable so a long
+   result set never pushes the camera viewfinder above it off screen. */
+#qNameState{font-size:13px; color:var(--mut); padding:2px 2px 4px}
+.qname-list{max-height:300px; overflow-y:auto; border-radius:10px}
+.qname-list button{display:block; width:100%; text-align:left; padding:11px 12px;
+  border-bottom:1px solid var(--line); background:#fff}
+.qname-list button:last-child{border-bottom:none}
+.qname-list button:active{background:var(--paper)}
+.qname-list .qn-brand{display:block; font-size:11px; font-weight:700; color:var(--mut);
+  text-transform:uppercase; letter-spacing:.4px}
+.qname-list .qn-item{font-size:14.5px; font-weight:700; line-height:1.25; margin-top:1px}
+.qname-list .qn-sku, .qname-list .qn-size{display:block; font-size:12px; color:var(--mut); margin-top:1px}
+.qname-list .qn-size{font-family:'IBM Plex Mono',monospace}
+#qNameEmpty{font-size:13px; color:var(--mut)}
+#qNameEmpty .hint{display:block; margin-top:4px; font-size:12px}
+
 .linkbtn{background:none; color:var(--mut); font-size:12.5px; font-weight:600;
   text-decoration:underline; padding:2px 0}
 
@@ -342,15 +359,23 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
   <section id="searchScreen" class="hidden">
 
     <div class="card">
-      <div class="eyebrow">สแกนหรือพิมพ์บาร์โค้ด</div>
+      <div class="eyebrow">สแกน บาร์โค้ด หรือชื่อสินค้า</div>
       <div class="code-row">
-        <input type="text" id="qCode" inputmode="numeric" enterkeyhint="search"
-               placeholder="สแกน หรือพิมพ์เลข…" autocomplete="off">
+        <input type="text" id="qCode" enterkeyhint="search"
+               placeholder="สแกน · เลขบาร์โค้ด · หรือชื่อสินค้า" autocomplete="off"
+               autocorrect="off" spellcheck="false">
         <button class="scan-btn" id="qCamBtn" title="เปิดกล้อง">▣</button>
       </div>
       <div class="readerwrap hidden" id="qReaderWrap">
         <div id="qReader"></div>
       </div>
+    </div>
+
+    <div class="card hidden" id="qNameCard">
+      <div class="eyebrow">ผลการค้นหา · Results</div>
+      <div class="hidden" id="qNameState"></div>
+      <div class="qname-list hidden" id="qNameList"></div>
+      <div class="hidden" id="qNameEmpty"></div>
     </div>
 
     <div class="card hit hidden" id="qHit">
@@ -400,7 +425,7 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
 <script type="module">
 import { makeId, normBarcode, priceKey, priceValue, buildObs, shouldAcceptScan, rankStores,
          outboxAdd, outboxUndo, outboxDue, outboxMark, outboxRemove,
-         outboxPending, UNDO_MS } from "./core.js";
+         outboxPending, UNDO_MS, fuzzyScore } from "./core.js";
 
 /* ================= CONFIG ================= */
 const API_URL = "https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q-A3R6Fp45V42sBslG1AhZfQ_S3RyQGOg1Zp5toMgQtyaGg/exec";
@@ -824,6 +849,7 @@ let qCam = null, qCamOn = false, qLast = null, qCode = null;
 
 async function qStartCam(){
   if (qCamOn) return;
+  clearNameResults();   // a scan result and a stale name-search list on screen is confusing
   if (typeof Html5Qrcode === 'undefined'){ toast('โหลดตัวสแกนไม่สำเร็จ — พิมพ์เลขแทน', true); return; }
   $('qReaderWrap').classList.remove('hidden');
   qCam = new Html5Qrcode('qReader', { verbose:false });
@@ -852,6 +878,101 @@ async function qStopCam(){
   qCam = null; qCamOn = false;
   $('qReaderWrap').classList.add('hidden');
   $('qCamBtn').classList.remove('on');
+}
+
+/* ---- name search ----
+   The barcode field doubles as a name search box: standing in a shop without the item in
+   hand, or with an unreadable barcode, typing "mille lip" should still find something.
+   qNameSeq guards against a slow reply landing after a newer query has already superseded
+   it — the classic out-of-order-response bug for anything typed and debounced. */
+let qNameTimer = null, qNameSeq = 0;
+const isBarcodeLike = s => /^\d{8,}$/.test(s);
+
+function clearNameResults(){
+  qNameSeq++;                          // invalidate any reply still in flight
+  clearTimeout(qNameTimer);
+  $('qNameCard').classList.add('hidden');
+  $('qNameState').classList.add('hidden'); $('qNameState').textContent = '';
+  $('qNameList').classList.add('hidden'); $('qNameList').innerHTML = '';
+  $('qNameEmpty').classList.add('hidden'); $('qNameEmpty').innerHTML = '';
+}
+
+function showNameSearching(){
+  $('qNameCard').classList.remove('hidden');
+  $('qNameState').textContent = 'กำลังค้นหา…';
+  $('qNameState').classList.remove('hidden');
+  $('qNameList').classList.add('hidden');
+  $('qNameEmpty').classList.add('hidden');
+}
+
+/** Offline vs. the endpoint itself failing — same distinction api() already carries for
+    every other call in this file: a caught fetch/parse failure sets d.offline, a reply
+    the server actually sent back with ok:false does not. */
+function showNameSearchError(d){
+  $('qNameState').classList.add('hidden');
+  $('qNameList').classList.add('hidden');
+  $('qNameEmpty').classList.remove('hidden');
+  $('qNameEmpty').textContent = (d && d.offline)
+    ? 'ไม่มีสัญญาณ — ลองใหม่เมื่อเชื่อมต่อได้'
+    : 'ค้นหาด้วยชื่อยังใช้ไม่ได้ตอนนี้ — ลองพิมพ์บาร์โค้ดแทน';
+}
+
+/** The server matches tokens in sheet order, which is meaningless to a human — rank by how
+    well the query matches brand, item, or the two combined, best first. */
+function rankProducts(list, q){
+  return list
+    .map(p => ({ p, score: Math.max(
+      fuzzyScore(p.brand, q),
+      fuzzyScore(p.item, q),
+      fuzzyScore([p.brand, p.item].filter(Boolean).join(' '), q)) }))
+    .sort((a, b) => b.score - a.score)
+    .map(x => x.p);
+}
+
+function renderNameResults(list, q){
+  $('qNameState').classList.add('hidden');
+  if (!list.length) {
+    $('qNameList').classList.add('hidden');
+    $('qNameEmpty').classList.remove('hidden');
+    $('qNameEmpty').innerHTML = 'ไม่พบสินค้าที่ตรงกับคำค้นนี้' +
+      '<span class="hint">ค้นหาแบบตรงคำเท่านั้น ไม่รองรับตัวสะกดผิด</span>';
+    return;
+  }
+  $('qNameEmpty').classList.add('hidden');
+  const ranked = rankProducts(list, q).slice(0, 30);
+  $('qNameList').classList.remove('hidden');
+  $('qNameList').innerHTML = ranked.map(p => {
+    const sizeUnit = [p.size, p.unit].filter(Boolean).join(' ');
+    return `<button type="button" data-code="${esc(p.barcode)}">
+        <span class="qn-brand">${esc(p.brand || '')}</span>
+        <div class="qn-item">${esc(p.item || p.barcode)}</div>
+        ${p.sku ? `<span class="qn-sku">${esc(p.sku)}</span>` : ''}
+        ${sizeUnit ? `<span class="qn-size">${esc(sizeUnit)}</span>` : ''}
+      </button>`;
+  }).join('');
+}
+
+async function runNameSearch(q){
+  const seq = ++qNameSeq;
+  showNameSearching();
+  const d = await api(`?action=psearch&q=${encodeURIComponent(q)}&limit=30`);
+  if (seq !== qNameSeq) return;        // a newer query (or a clear) overtook this reply
+  if (!d.ok) { showNameSearchError(d); return; }
+  renderNameResults(Array.isArray(d.p) ? d.p : [], q);
+}
+
+function scheduleNameSearch(q){
+  clearTimeout(qNameTimer);
+  qNameTimer = setTimeout(() => runNameSearch(q), 300);   // wait for typing to stop
+}
+
+/** Decides what the shared field means as it is typed. Barcodes are all-digit and long
+    enough to not be confused with a partial one still being typed; anything else is a
+    name search. */
+function onQCodeInput(){
+  const val = $('qCode').value.trim();
+  if (!val || isBarcodeLike(val)) { clearNameResults(); return; }
+  scheduleNameSearch(val);
 }
 
 const median = a => {
@@ -1068,7 +1189,20 @@ document.addEventListener('keydown', e => {
 });
 $('tabSearch').addEventListener('click', () => showTab('search'));
 $('tabLog').addEventListener('click', () => showTab('log'));
-$('qCode').addEventListener('keydown', e => { if (e.key === 'Enter') qLookup(e.target.value); });
+$('qCode').addEventListener('input', onQCodeInput);
+$('qCode').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const val = e.target.value.trim();
+  if (!val) return;
+  if (isBarcodeLike(val)) { clearNameResults(); qLookup(val); }
+  else { clearTimeout(qNameTimer); runNameSearch(val); }   // Enter skips the debounce wait
+});
+$('qNameList').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-code]');
+  if (!btn) return;
+  clearNameResults();
+  qLookup(btn.dataset.code);
+});
 $('qCamBtn').addEventListener('click', () => qCamOn ? qStopCam() : qStartCam());
 document.addEventListener('click', e => {
   if (!e.target.closest('.combo')) $('storeDrop').classList.add('hidden');
