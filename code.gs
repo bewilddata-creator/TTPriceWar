@@ -1,8 +1,14 @@
 /**
- * PRICE SCOUT — backend v15
+ * PRICE SCOUT — backend v16
  *
  * Serves three static pages from one Sheet: index.html (phone capture), admin.html (desk
  * entry + product/store admin), viewer.html (analysis).
+ *
+ * v16: buildAnalysis() now also emits `o`, the latest price per (product, store, flag) —
+ * [pIdx, sIdx, price, flagIdx] — so the viewer can filter by channel and by individual store,
+ * neither of which is possible from the per-product aggregates (`ref`/`lo`/`hi`/`ns`/`pd`)
+ * alone. Built from the SAME per-store accumulator that already produces those aggregates, not
+ * a second read of Observations, so the two can never drift apart.
  *
  * v14: Observations gained column I, min_qty, for the new `wholesale` flag value (a shop's
  * bulk-selling price; the other flags never carry it). And ทุนส่ง (wholesale COST, from the
@@ -128,7 +134,7 @@ function doGet(e) {
   if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
   if (action === "tunsong") return tunsongEndpoint(e.parameter.barcode);
   if (action === "tunsonglist") return tunsongList(e.parameter.limit);
-  return json({ ok: true, msg: "Price Scout API v15" });
+  return json({ ok: true, msg: "Price Scout API v16" });
 }
 
 /** Every form a barcode may appear in, since the Sheet stores them as numbers. */
@@ -592,6 +598,20 @@ function buildAnalysis() {
     });
   }
 
+  // ---- Stores: store_id, name, region, channel. Built here, BEFORE `o` below, so the
+  // storeId -> sIdx map exists when `o` is emitted. `s` itself must stay exactly the rows and
+  // order it always had — the viewer's existing store lookups are positional. ----
+  const st = ss.getSheetByName("Stores");
+  let s = [];
+  if (st.getLastRow() > 1) {
+    const v = st.getRange(2, 1, st.getLastRow() - 1, 4).getValues();
+    s = v.filter(function (r) { return r[0]; })
+         .map(function (r) { return [String(r[0]), String(r[1] || r[0]),
+                                     String(r[2] || ""), String(r[3] || "")]; });
+  }
+  const sIdxByStoreId = {};
+  s.forEach(function (row, i) { sIdxByStoreId[row[0]] = i; });
+
   // ---- Combine: every product appears, with zeros when it has no observations, so the
   // viewer's search can still find it. ----
   const p = base.map(function (row, i) {
@@ -616,21 +636,37 @@ function buildAnalysis() {
     return row.concat([ref, lo, hi, ns, pd, sizes[i][0], sizes[i][1]]);
   });
 
-  // ---- Stores: store_id, name, region, channel ----
-  const st = ss.getSheetByName("Stores");
-  let s = [];
-  if (st.getLastRow() > 1) {
-    const v = st.getRange(2, 1, st.getLastRow() - 1, 4).getValues();
-    s = v.filter(function (r) { return r[0]; })
-         .map(function (r) { return [String(r[0]), String(r[1] || r[0]),
-                                     String(r[2] || ""), String(r[3] || "")]; });
-  }
+  // ---- o: latest price per (product, store, flag) — [pIdx, sIdx, price, flagIdx], flagIdx 0
+  // = normal, 1 = promo. This is what lets the viewer filter by channel (via s[sIdx][3]) and by
+  // individual store, which the aggregates above cannot support since they are already
+  // collapsed across every store. Emitted straight from `acc`, the SAME accumulator that just
+  // produced ref/lo/hi/ns/pd — not a second read of Observations — so this can never disagree
+  // with those aggregates. short_shelf_life and wholesale are excluded here too, for the same
+  // reason they never reach `acc` in the first place: neither is a shelf price, and letting
+  // either into a filtered median would understate it. A store that appears in Observations but
+  // is missing from the Stores tab has no sIdx and is skipped — such observations are already
+  // dropped from the aggregates above for the same reason (see the join note at the top of this
+  // function), so this is not a new gap. ----
+  const FLAG_IDX = { normal: 0, promo: 1 };
+  const o = [];
+  Object.keys(acc).forEach(function (piKey) {
+    const pi = Number(piKey);
+    const a = acc[pi];
+    ["normal", "promo"].forEach(function (flag) {
+      const bucket = a[flag];
+      Object.keys(bucket).forEach(function (sid) {
+        const sIdx = sIdxByStoreId[sid];
+        if (sIdx === undefined) return;   // store missing from Stores tab — see comment above
+        o.push([pi, sIdx, bucket[sid].price, FLAG_IDX[flag]]);
+      });
+    });
+  });
 
   const payload = {
     ok: true,
     generated: Utilities.formatDate(new Date(), tz, "yyyy-MM-dd HH:mm"),
     brands: B.arr, c1: C1.arr, c2: C2.arr, c3: C3.arr,
-    s: s, p: p
+    s: s, p: p, o: o
   };
 
   writeDriveJson(ANALYSIS_FILE, JSON.stringify(payload));
