@@ -1,5 +1,5 @@
 /**
- * PRICE SCOUT — backend v11
+ * PRICE SCOUT — backend v12
  *
  * Serves three static pages from one Sheet: index.html (phone capture), admin.html (desk
  * entry + product/store admin), viewer.html (analysis).
@@ -119,7 +119,7 @@ function doGet(e) {
   if (action === "vocab") return vocab();
   if (action === "needsinfo") return needsInfo(e.parameter.limit);
   if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
-  return json({ ok: true, msg: "Price Scout API v11" });
+  return json({ ok: true, msg: "Price Scout API v12" });
 }
 
 /** Every form a barcode may appear in, since the Sheet stores them as numbers. */
@@ -290,20 +290,28 @@ function needsInfo(limitParam) {
   const tz = Session.getScriptTimeZone();
   const out = [];
   if (last > 1) {
-    const v = ps.getRange(2, 1, last - 1, 14).getValues();   // A..N in one call
-    for (let i = 0; i < v.length && out.length < limit; i++) {
-      const r = v[i];
-      const brand = r[1] || "";
-      const needs = r[11] === "YES";
-      if (!needs && String(brand).trim()) continue;           // neither condition met
+    // Two narrow reads to decide WHICH rows qualify, then full rows for only those. Reading
+    // all 14 columns of 21k+ products to find a handful was the slow part; brand (B) and
+    // needs_info (L) are all the filter needs.
+    const n = last - 1;
+    const brands = ps.getRange(2, 2, n, 1).getValues();
+    const flags  = ps.getRange(2, 12, n, 1).getValues();
+    const rows = [];
+    for (let i = 0; i < n && rows.length < limit; i++) {
+      const needs = flags[i][0] === "YES";
+      if (needs || !String(brands[i][0] || "").trim()) rows.push({ row: i + 2, needs: needs });
+    }
+    rows.forEach(function (hit) {
+      const r = ps.getRange(hit.row, 1, 1, 13).getValues()[0];   // A..M
+      if (!r[0]) return;
       out.push({
-        barcode: String(r[0]), brand: brand, item: r[2] || "", sku: r[3] || "",
+        barcode: String(r[0]), brand: r[1] || "", item: r[2] || "", sku: r[3] || "",
         size: r[4] || "", unit: r[5] || "", c1: r[6] || "", c2: r[7] || "", c3: r[8] || "",
         img: String(r[9] || "").replace(CDN_PREFIX, "~"),
         first_seen: (r[12] instanceof Date) ? Utilities.formatDate(r[12], tz, "yyyy-MM-dd") : String(r[12] || ""),
-        needs_info: needs
+        needs_info: hit.needs
       });
-    }
+    });
   }
   return json({ ok: true, cdn: CDN_PREFIX, p: out });
 }
@@ -630,10 +638,13 @@ function writeOne(ss, d, ctx) {
       let img = "";
       if (d.new_product.photo) img = savePhoto(d.new_product.photo, "prod_" + key);
       const np = d.new_product;
-      const hasNames = (np.brand || np.item);
+      // needs_info is ALWAYS "YES" here. Earlier this was set only when no name was supplied,
+      // so typing a description at the desk marked the product complete — but a description is
+      // a hint, not data: brand, size, unit and categories are all still missing. Clearing the
+      // flag is the admin's explicit "I finished this" signal, and nothing else should set it.
       ss.getSheetByName("Products").appendRow(["'" + String(d.barcode), np.brand || "",
         np.item || "", np.sku || "", "", "", "", "", "", img,
-        "field_scan", hasNames ? "" : "YES", ts, "", ctx.nextSeq++]);
+        "field_scan", "YES", ts, "", ctx.nextSeq++]);
       ctx.codes[key] = true;
     }
   }
