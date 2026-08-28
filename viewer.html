@@ -438,15 +438,19 @@ let IMG = null, imgFetchedOnce = false, imgLenWarned = false, SUMMARY_GENERATED 
 
 /**
  * Decode the ?action=summary payload. Everything here is already aggregated server-side —
- * ref/lo/hi/ns/pd per product — so unlike the old decode there is no per-observation
- * loop over a raw price log. No image URL and no wholesale (ทุนส่ง) figures exist in this
- * payload; they are fetched on demand (image) or not shown at all (ทุนส่ง) — see openDetail().
+ * ref/lo/hi/ns/pd per product, plus size/unit appended as indices 13-14 — so unlike the old
+ * decode there is no per-observation loop over a raw price log, and the detail sheet no longer
+ * needs a ?action=lookup round trip for size/unit. A cached payload from before size/unit
+ * existed simply destructures those two as undefined, defaulted to '' below so nothing renders
+ * "undefined". No image URL and no wholesale (ทุนส่ง) figures exist in this payload; the image
+ * comes from the separate ?action=images payload (see applyImagesToP()) and ทุนส่ง is not shown
+ * at all.
  */
 function decode(d){
   // s rows are [store_id, name, region, channel] — see buildAnalysis() in code.gs.
   STORES = d.s.map(r => ({ id: r[0], name: r[1], region: r[2], channel: r[3] }));
   P = d.p.map(r => {
-    const [bc, brandIdx, item, sku, c1Idx, c2Idx, c3Idx, needsInfo01, ref, lo, hi, ns, pd] = r;
+    const [bc, brandIdx, item, sku, c1Idx, c2Idx, c3Idx, needsInfo01, ref, lo, hi, ns, pd, size, unit] = r;
     const brand = d.brands[brandIdx] || '';
     const c1 = d.c1[c1Idx] || '', c2 = d.c2[c2Idx] || '', c3 = d.c3[c3Idx] || '';
     const item2 = item || '', sku2 = sku || '';
@@ -454,6 +458,7 @@ function decode(d){
       bc: String(bc), brand, item: item2, sku: sku2, c1, c2, c3,
       needs: needsInfo01 === 1,
       ref: ref || 0, lo: lo || 0, hi: hi || 0, ns: ns || 0, pd: pd || 0,
+      size: size || '', unit: unit || '',
       img: '',   // filled in by applyImagesToP() once ?action=images has loaded, if ever
       words: (brand + ' ' + item2 + ' ' + sku2 + ' ' + c3).toLowerCase().normalize('NFC')
         .split(/[^a-z0-9\u0E00-\u0E7F.+]+/).filter(Boolean)
@@ -500,6 +505,7 @@ async function loadImagesBackground(){
     IMG = cached;
     applyImagesToP();
     renderCurrent();
+    fillOpenDetailImage();
   }
   if(!cached || cached.generated !== SUMMARY_GENERATED){
     const d = await api('?action=images', {}, IMAGES_TIMEOUT);
@@ -507,9 +513,21 @@ async function loadImagesBackground(){
       IMG = d;
       applyImagesToP();
       renderCurrent();
+      fillOpenDetailImage();
       idbSet('images', d);   // best-effort write; a failure here must never break anything
     }
   }
+}
+/**
+ * If the detail sheet was opened before ?action=images finished loading, its image slot was left
+ * on the placeholder (see renderDetailImage()). Once the payload lands and applyImagesToP() has
+ * run, re-paint that same product's image slot if the sheet is still open on it — the user
+ * should not be stuck with a blank slot just for having opened the sheet quickly.
+ */
+function fillOpenDetailImage(){
+  if(!isDetailOpen() || !curDetailBc) return;
+  const p = PBY_BC.get(curDetailBc);
+  if(p) renderDetailImage(p);
 }
 
 /* ================= LOAD =================
@@ -648,48 +666,51 @@ function renderSearch(q){
   });
 }
 
-/* ================= DETAIL ================= */
+/* ================= DETAIL =================
+   The image and size/unit no longer need their own network round trip: size/unit ride along on
+   the ?action=summary payload (see decode()), and the image comes from the already-loaded/loading
+   ?action=images payload (p.img, see applyImagesToP()). Only prices still needs a fetch, which
+   halves the sheet's fixed network cost versus the old lookup+prices pair. */
+// bc of whichever product the detail sheet is currently showing, so a late-arriving images
+// payload (loadImagesBackground can finish well after the sheet is opened, or even after it's
+// closed and a different one opened) knows whether it still needs to paint into #dImg.
+let curDetailBc = null;
 function resetDetailLoading(p){
-  $("dImg").classList.add('hidden'); $("dImg").removeAttribute('src');
-  $("dNoimg").classList.remove('hidden'); $("dNoimg").textContent = '…';
   $("dBrand").textContent = p.brand; $("dItem").textContent = p.item || p.bc;
   $("dSku").textContent = p.sku ? 'SKU: '+p.sku : '';
-  $("dSize").textContent = '';
+  $("dSize").textContent = [p.size, p.unit].filter(Boolean).join(' ');
   $("dBc").textContent = p.bc + ' · ' + [p.c1,p.c2,p.c3].filter(Boolean).join(' › ');
   $("dRows").innerHTML = `<tr><td colspan="3" style="color:var(--mut)">กำลังโหลด…</td></tr>`;
+}
+/**
+ * Paints (or re-paints) the detail sheet's image slot from p.img. Called once synchronously when
+ * the sheet opens, and again from loadImagesBackground() if the images payload finishes loading
+ * while this same product's sheet is still open — p.img may be '' at open time simply because
+ * the page was opened seconds ago and ?action=images hasn't landed yet, not because the product
+ * has no picture, and the two cases are indistinguishable from here, so both show the placeholder
+ * until/unless a real URL shows up.
+ */
+function renderDetailImage(p){
+  $("dImg").classList.add('hidden'); $("dImg").removeAttribute('src');
+  $("dNoimg").classList.remove('hidden'); $("dNoimg").textContent = '?';
+  if(!p.img) return;
+  const im = $("dImg");
+  im.addEventListener('load', () => { im.classList.remove('hidden'); $("dNoimg").classList.add('hidden'); }, { once:true });
+  im.addEventListener('error', () => { im.classList.add('hidden'); $("dNoimg").classList.remove('hidden'); }, { once:true });
+  im.src = p.img;
 }
 async function openDetail(bc){
   const p = PBY_BC.get(bc);
   if(!p) return;
   $("ov").style.display = 'block';
+  curDetailBc = bc;
   resetDetailLoading(p);
+  renderDetailImage(p);
   const reqId = ++detailReq;
   const norm = normBarcode(p.bc);
-  const [lk, pr] = await Promise.all([
-    api(`?action=lookup&barcode=${encodeURIComponent(norm)}`, {}, NET_TIMEOUT),
-    api(`?action=prices&barcode=${encodeURIComponent(norm)}`, {}, PRICES_TIMEOUT)
-  ]);
+  const pr = await api(`?action=prices&barcode=${encodeURIComponent(norm)}`, {}, PRICES_TIMEOUT);
   if(reqId !== detailReq) return;   // a different product was opened while this was in flight
 
-  // image + size/unit, from ?action=lookup
-  if(lk && lk.ok && lk.found && lk.p){
-    $("dSize").textContent = [lk.p.size, lk.p.unit].filter(Boolean).join(' ');
-    const img = lk.p.img ? lk.p.img.replace('~', lk.cdn || '') : '';
-    if(img){
-      const im = $("dImg");
-      im.addEventListener('load', () => { im.classList.remove('hidden'); $("dNoimg").classList.add('hidden'); }, { once:true });
-      im.addEventListener('error', () => { $("dNoimg").textContent = '?'; }, { once:true });
-      im.src = img;
-    } else { $("dNoimg").textContent = '?'; }
-  } else if(lk && lk.ok && !lk.found){
-    $("dNoimg").textContent = '?';
-    $("dSize").textContent = 'ไม่พบข้อมูลเพิ่มเติมของสินค้านี้';
-  } else {
-    $("dNoimg").textContent = '?';
-    $("dSize").textContent = 'โหลดรูป/ขนาดบรรจุไม่สำเร็จ';
-  }
-
-  // prices, from ?action=prices
   if(pr && pr.ok && Array.isArray(pr.prices)){
     $("dRows").innerHTML = pr.prices.length ? pr.prices.map(o=>`
       <tr><td>${esc(o.store)}${o.flag==='promo'?'<span class="flagpill promo">โปรฯ</span>':o.flag==='short_shelf_life'?'<span class="flagpill exp">ใกล้หมดอายุ</span>':''}</td>
@@ -699,7 +720,7 @@ async function openDetail(bc){
     $("dRows").innerHTML = `<tr><td colspan="3" style="color:var(--warn)">โหลดราคาไม่สำเร็จ — ปิดแล้วลองเปิดใหม่</td></tr>`;
   }
 }
-function closeOverlay(){ $("ov").style.display = 'none'; }
+function closeOverlay(){ $("ov").style.display = 'none'; curDetailBc = null; }
 
 /* ================= CATEGORY ================= */
 function med(a){ const s=[...a].sort((x,y)=>x-y); const m=s.length>>1; return s.length%2 ? s[m] : (s[m-1]+s[m])/2 }
