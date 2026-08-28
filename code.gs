@@ -1,8 +1,12 @@
 /**
- * PRICE SCOUT — backend v13
+ * PRICE SCOUT — backend v14
  *
  * Serves three static pages from one Sheet: index.html (phone capture), admin.html (desk
  * entry + product/store admin), viewer.html (analysis).
+ *
+ * v14: Observations gained column I, min_qty, for the new `wholesale` flag value (a shop's
+ * bulk-selling price; the other flags never carry it). And ทุนส่ง (wholesale COST, from the
+ * Tunsong tab) got two new read endpoints — see "TUNSONG IS SENSITIVE" below.
  *
  * DEPLOYING — keeps the same /exec URL, which every page has hard-coded:
  *   Editor → paste → Save → Deploy → Manage deployments → ✏️ → Version: New version → Deploy
@@ -11,6 +15,9 @@
  * ONE-TIME SETUP (already done; here for a rebuild from scratch):
  *   backfillSeq()             stamps Products column O with a monotonic seq
  *   installAnalysisTrigger()  nightly 03:00 buildAnalysis()
+ *
+ * TUNSONG IS SENSITIVE: it must only ever be reachable through action=tunsong and
+ * action=tunsonglist. Never fold it into summary/images/lookup/prices or any other endpoint.
  *
  * TWO RULES THAT ARE NOT OBVIOUS AND HAVE EACH ALREADY CAUSED A BUG:
  *  1. Barcodes are stored as NUMBERS, so leading zeros are gone and a UPC-A may arrive as 12
@@ -119,7 +126,9 @@ function doGet(e) {
   if (action === "vocab") return vocab();
   if (action === "needsinfo") return needsInfo(e.parameter.limit);
   if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
-  return json({ ok: true, msg: "Price Scout API v13" });
+  if (action === "tunsong") return tunsongEndpoint(e.parameter.barcode);
+  if (action === "tunsonglist") return tunsongList(e.parameter.limit);
+  return json({ ok: true, msg: "Price Scout API v14" });
 }
 
 /** Every form a barcode may appear in, since the Sheet stores them as numbers. */
@@ -217,16 +226,78 @@ function pricesFor(ss, forms) {
   const tz = Session.getScriptTimeZone();
   const seen = {}, out = [];
   for (let i = 0; i < rowNums.length && out.length < 12; i++) {
-    const v = os.getRange(rowNums[i], 1, 1, 8).getValues()[0];
+    const v = os.getRange(rowNums[i], 1, 1, 9).getValues()[0];   // A..I, now including min_qty
     const sid = String(v[2] || ""), flag = String(v[5] || "normal");
     const dedupe = sid + "|" + flag;
     if (seen[dedupe]) continue;             // rows are newest-first, so the first wins
     seen[dedupe] = true;
     const meta = smap[sid] || { name: sid, region: "", channel: "" };
     out.push({ store: meta.name, region: meta.region, channel: meta.channel,
-               price: Number(v[4]), flag: flag,
+               price: Number(v[4]), flag: flag, min_qty: Number(v[8]) || 0,
                date: (v[1] instanceof Date) ? Utilities.formatDate(v[1], tz, "yyyy-MM-dd")
                                             : String(v[1] || "").slice(0, 10) });
+  }
+  return out;
+}
+
+/** ทุนส่ง (wholesale cost) for one barcode. Cached and shaped like pricesEndpoint(), but reads
+ *  the Tunsong tab and is deliberately its own endpoint — see the header note on why this data
+ *  must never be folded into prices/summary/lookup. */
+function tunsongEndpoint(barcode) {
+  if (!barcode) return json({ ok: true, t: [] });
+  const cache = CacheService.getScriptCache();
+  const ck = "tn:" + normBarcode(barcode);
+  const hit = cache.get(ck);
+  if (hit) return ContentService.createTextOutput(hit).setMimeType(ContentService.MimeType.JSON);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const payload = JSON.stringify({ ok: true, t: tunsongFor(ss, barcodeForms(barcode)) });
+  cache.put(ck, payload, 600);       // short, same reasoning as pricesEndpoint
+  return ContentService.createTextOutput(payload).setMimeType(ContentService.MimeType.JSON);
+}
+
+/** Latest ทุนส่ง per store for this barcode, newest first. Mirrors pricesFor()'s
+ *  createTextFinder + barcodeForms() scan of Observations, but on Tunsong column D, and
+ *  de-dupes on store_id ALONE — Tunsong has no flag, so "one current wholesale cost per shop"
+ *  is the whole rule; if a shop ever posts more than one tier, the newest simply wins. */
+function tunsongFor(ss, forms) {
+  const tn = ss.getSheetByName("Tunsong");
+  if (!tn) return [];
+  const last = tn.getLastRow();
+  if (last < 2) return [];
+  const col = tn.getRange(2, 4, last - 1, 1);   // D: barcode
+
+  const uniq = forms.filter(function (v, i, a) { return v && a.indexOf(v) === i; });
+  const rows = {};
+  for (let i = 0; i < uniq.length; i++) {
+    const found = col.createTextFinder(uniq[i]).matchEntireCell(true).findAll();
+    for (let k = 0; k < found.length; k++) rows[found[k].getRow()] = true;
+  }
+  const rowNums = Object.keys(rows).map(Number).sort(function (a, b) { return b - a; });
+  if (!rowNums.length) return [];
+
+  // store_id -> {name, region, channel}
+  const st = ss.getSheetByName("Stores");
+  const smap = {};
+  if (st.getLastRow() > 1) {
+    st.getRange(2, 1, st.getLastRow() - 1, 4).getValues().forEach(function (v) {
+      smap[String(v[0])] = { name: String(v[1] || v[0]),
+                             region: String(v[2] || ""), channel: String(v[3] || "") };
+    });
+  }
+
+  const tz = Session.getScriptTimeZone();
+  const seen = {}, out = [];
+  for (let i = 0; i < rowNums.length && out.length < 12; i++) {
+    const v = tn.getRange(rowNums[i], 1, 1, 8).getValues()[0];   // A..H
+    const sid = String(v[2] || "");
+    if (seen[sid]) continue;                // rows are newest-first, so the first wins
+    seen[sid] = true;
+    const meta = smap[sid] || { name: sid, region: "", channel: "" };
+    out.push({ store: meta.name, region: meta.region, channel: meta.channel,
+               price: Number(v[4]), info_source: String(v[5] || ""), confidence: String(v[6] || ""),
+               date: (v[1] instanceof Date) ? Utilities.formatDate(v[1], tz, "yyyy-MM-dd")
+                                            : String(v[1] || "").slice(0, 10),
+               notes: String(v[7] || "") });
   }
   return out;
 }
@@ -342,6 +413,84 @@ function psearch(q, brandFilter, limitParam) {
   return json({ ok: true, p: out });
 }
 
+/**
+ * The most recent ทุนส่ง entries across ALL products, newest first — for the admin tab to show
+ * what has been captured lately. Never cached: an admin who just added an entry must see it on
+ * the next fetch. Same sensitivity rule as tunsongEndpoint() — this is its own endpoint and
+ * must stay that way.
+ *
+ * The tab is append-ordered in practice, so "the last rows" and "the newest rows" are normally
+ * the same rows — but that stops being true the moment anyone sorts the tab, which is why a
+ * SMALL tab is read in full and sorted by date instead of trusted to already be in order.
+ * Above that size we fall back to trusting append order, since the read itself is uncapped and
+ * scanning a huge tab every call would be the next `.getRange` inside a loop mistake.
+ */
+function tunsongList(limitParam) {
+  let limit = Number(limitParam) || 50;
+  if (limit < 1) limit = 50;
+  if (limit > 200) limit = 200;
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const tn = ss.getSheetByName("Tunsong");
+  const last = tn ? tn.getLastRow() : 0;
+  if (last < 2) return json({ ok: true, t: [] });
+
+  const n = last - 1;
+  const SMALL_TAB = 500;    // small enough that "read it all and sort" is cheap AND correct
+  let rows;
+  if (n <= SMALL_TAB) {
+    rows = tn.getRange(2, 1, n, 8).getValues();
+    rows.sort(function (a, b) {
+      const ta = (a[1] instanceof Date) ? a[1].getTime() : 0;
+      const tb = (b[1] instanceof Date) ? b[1].getTime() : 0;
+      return tb - ta;
+    });
+    rows = rows.slice(0, limit);
+  } else {
+    const from = last - limit + 1;
+    rows = tn.getRange(from, 1, last - from + 1, 8).getValues();
+    rows.reverse();         // last-appended first, since we did not read the whole tab to sort
+  }
+
+  const tz = Session.getScriptTimeZone();
+
+  // store_id -> name
+  const st = ss.getSheetByName("Stores");
+  const smap = {};
+  if (st.getLastRow() > 1) {
+    st.getRange(2, 1, st.getLastRow() - 1, 2).getValues().forEach(function (v) {
+      smap[String(v[0])] = String(v[1] || v[0]);
+    });
+  }
+
+  // barcode -> {brand, item, sku}, one bulk Products read, filtered to only the barcodes in
+  // `rows` — never the whole 20k+ row tab for a page of admin entries.
+  const wanted = {};
+  rows.forEach(function (r) { wanted[normBarcode(r[3])] = true; });
+  const pmap = {};
+  const ps = ss.getSheetByName("Products");
+  const pLast = ps.getLastRow();
+  if (pLast > 1) {
+    ps.getRange(2, 1, pLast - 1, 4).getValues().forEach(function (r) {
+      const key = normBarcode(r[0]);
+      if (wanted[key]) pmap[key] = { brand: r[1] || "", item: r[2] || "", sku: r[3] || "" };
+    });
+  }
+
+  const out = rows.map(function (r) {
+    const prod = pmap[normBarcode(r[3])] || { brand: "", item: "", sku: "" };
+    return {
+      ts_id: String(r[0] || ""),
+      date: (r[1] instanceof Date) ? Utilities.formatDate(r[1], tz, "yyyy-MM-dd") : String(r[1] || "").slice(0, 10),
+      store: smap[String(r[2] || "")] || String(r[2] || ""), store_id: String(r[2] || ""),
+      barcode: String(r[3] || ""), brand: prod.brand, item: prod.item, sku: prod.sku,
+      price: Number(r[4]), info_source: String(r[5] || ""), confidence: String(r[6] || ""),
+      notes: String(r[7] || "")
+    };
+  });
+  return json({ ok: true, t: out });
+}
+
 /* ---- precomputed analysis, built on a schedule and served from Drive ---- */
 
 /** Interns repeated strings (brands, categories) so the payload ships indexes, not text. */
@@ -422,7 +571,10 @@ function buildAnalysis() {
       const price = Number(r[4]);
       if (isNaN(price)) return;
       const flag = String(r[5] || "normal");
-      if (flag !== "normal" && flag !== "promo") return;   // short_shelf_life is not a shelf price
+      // short_shelf_life and wholesale are both excluded on purpose: wholesale is a bulk
+      // selling price, not a shelf price, and letting it into the median would understate
+      // every product it touches.
+      if (flag !== "normal" && flag !== "promo") return;
       const sid = String(r[2] || "");
       const at = (r[1] instanceof Date) ? r[1].getTime() : 0;
       let a = acc[pi];
@@ -683,9 +835,16 @@ function writeOne(ss, d, ctx) {
   if (d.type === "obs") {
     const id = d.obs_id || ("O-" + ts.getTime());
     if (alreadyWritten(ctx, id)) return { id: id, status: "duplicate" };
+    // min_qty only means anything on a `wholesale` row: a blank ("") on every other flag, NOT
+    // 0 — a retail row stored as 0 would read back as "bulk price, minimum one piece".
+    // Coerce rather than type-check: core.js sends a number today, but a form-driven client
+    // sending "12" would otherwise have its quantity silently dropped, leaving a bulk price
+    // with no quantity — unusable, and invisible once it is in the Sheet.
+    const q = Number(d.min_qty);
+    const minQty = (isFinite(q) && q > 0) ? q : "";
     ss.getSheetByName("Observations").appendRow([id, ts, d.store_id || "",
       "'" + String(d.barcode || ""), d.price, d.flag || "normal",
-      d.source || "scan", d.by || ""]);
+      d.source || "scan", d.by || "", minQty]);
     ctxRecentIds(ctx).push(id);
     ctx.cache.put("obs:" + id, "1", OBS_CACHE_SEC);
     return { id: id, status: "written", store_id: canonicalStore || undefined };
@@ -696,6 +855,8 @@ function writeOne(ss, d, ctx) {
     ss.getSheetByName("Tunsong").appendRow([tid, ts, d.store_id || "",
       "'" + String(d.barcode || ""), d.price, d.info_source || "",
       d.confidence || "", d.notes || ""]);
+    // Otherwise the viewer keeps serving the pre-write ทุนส่ง for up to 10 minutes.
+    CacheService.getScriptCache().remove("tn:" + normBarcode(d.barcode));
     return { id: tid, status: "written" };
   }
 
