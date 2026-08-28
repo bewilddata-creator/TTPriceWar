@@ -667,7 +667,10 @@ function writeAnalysisFile(content) {
   const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(PHOTO_FOLDER);
   const existing = findAnalysisFile(folder);
   if (existing) existing.setContent(content);
-  else folder.createFile(ANALYSIS_FILE, content, MimeType.JSON);
+  // "application/json" as a literal, NOT MimeType.JSON — that member does not exist in Apps
+  // Script's MimeType enum, so it evaluates to undefined and createFile throws
+  // "Argument cannot be null: mimeType". createFile accepts a MIME type string directly.
+  else folder.createFile(ANALYSIS_FILE, content, "application/json");
 }
 
 /**
