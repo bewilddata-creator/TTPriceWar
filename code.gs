@@ -161,6 +161,7 @@ function doGet(e) {
   if (action === "bootstrap") return bootstrap();
   if (action === "viewdata") return viewdata();
   if (action === "summary") return summary();
+  if (action === "rebuild") return rebuild();
   if (action === "delta") return delta(e.parameter.after_seq);
   if (action === "lookup") return lookup(e.parameter.barcode);
   if (action === "prices") return pricesEndpoint(e.parameter.barcode);
@@ -692,6 +693,33 @@ function summary() {
   if (!file) return json({ ok: false, error: "analysis file missing after build" });
   return ContentService.createTextOutput(file.getBlob().getDataAsString())
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * Rebuilds the analysis file on demand, so the viewer can offer a button instead of making
+ * someone open the Sheet.
+ *
+ * Deliberately does NOT take the script lock that doPost uses. buildAnalysis runs for tens of
+ * seconds, and holding that lock would stall every price save coming off a phone in a shop —
+ * the one thing that must never wait on analysis. A short CacheService flag stops two rebuilds
+ * overlapping instead; the worst case if it races is duplicated work, not corrupted data,
+ * because the file is written whole.
+ */
+function rebuild() {
+  const cache = CacheService.getScriptCache();
+  if (cache.get("rebuilding")) {
+    return json({ ok: false, busy: true, error: "กำลังอัปเดตอยู่แล้ว" });
+  }
+  cache.put("rebuilding", "1", 300);
+  try {
+    const n = buildAnalysis();
+    const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm");
+    return json({ ok: true, n: n, generated: stamp });
+  } catch (err) {
+    return json({ ok: false, error: String(err) });
+  } finally {
+    cache.remove("rebuilding");
+  }
 }
 
 /**
