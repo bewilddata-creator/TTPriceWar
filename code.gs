@@ -1,6 +1,19 @@
 /**
- * PRICE SCOUT — backend v9
- * = v8 + a standalone store-creation endpoint for the admin page.
+ * PRICE SCOUT — backend v10
+ * = v9 + a precomputed analysis payload so the viewer stops timing out.
+ *
+ * WHY v10: ?action=viewdata takes 60s and returns 4.65MB against the live data (26,289
+ * products x 12 cols + 45,167 observations x 8 cols, read and joined on every single request),
+ * and the viewer page never finishes loading it. Most of that weight is product image URLs
+ * (1.41MB raw) that the viewer only ever shows one of at a time. buildAnalysis() does the
+ * expensive read-and-join ONCE, folds each product's observations down to the few numbers a
+ * list/search view actually needs (ref price, range, store count, promo depth — no image URL),
+ * and writes the result to a Drive file. GET ?action=summary then just serves that file's
+ * content — reading a ~2MB file is fast, which is the entire point, so it must never recompute
+ * on the request path except the very first time the file does not exist yet. A daily trigger
+ * (installAnalysisTrigger, run once by hand) and a Sheet menu item both call buildAnalysis() to
+ * keep the file fresh. `viewdata` is untouched: viewer.html still calls it until it is rebuilt
+ * to use `summary`, and removing or reshaping it now would break the live page.
  *
  * WHY v9: until now a store could only come into being as a side effect of an observation
  * POST carrying `new_store` — the admin page had no way to add one directly. POST
@@ -56,6 +69,7 @@
 
 const CDN_PREFIX = "https://prodenbcdn.azureedge.net/products/";
 const PHOTO_FOLDER = "PriceScout Photos";
+const ANALYSIS_FILE = "pricescout-analysis.json";  // the one file buildAnalysis() writes/overwrites
 const FLAGS = ["normal", "promo", "short_shelf_life"];
 const SEQ_COL = 15;              // Products column O — monotonic append counter
 const RECENT_OBS_WINDOW = 300;   // fallback only; the cache is the real retry guard
@@ -111,7 +125,21 @@ function maxSeq(ps) {
 function onOpen() {
   SpreadsheetApp.getUi().createMenu("Price Scout")
     .addItem("เรียงลำดับสินค้ากลับเป็นเดิม", "restoreProductOrder")
+    .addItem("อัปเดตข้อมูลวิเคราะห์", "runBuildAnalysis")
     .addToUi();
+}
+
+/**
+ * Menu entry point for buildAnalysis(). Reports the product count and the timestamp that got
+ * written into the payload so whoever ran it can see the job actually did something, without
+ * having to go open the Drive file.
+ */
+function runBuildAnalysis() {
+  const ui = SpreadsheetApp.getUi();
+  const n = buildAnalysis();
+  const tz = Session.getScriptTimeZone();
+  const stamp = Utilities.formatDate(new Date(), tz, "yyyy-MM-dd HH:mm");
+  ui.alert("อัปเดตข้อมูลวิเคราะห์แล้ว: " + n + " รายการ (" + stamp + ")");
 }
 
 /**
@@ -132,6 +160,7 @@ function doGet(e) {
   const action = (e && e.parameter && e.parameter.action) || "";
   if (action === "bootstrap") return bootstrap();
   if (action === "viewdata") return viewdata();
+  if (action === "summary") return summary();
   if (action === "delta") return delta(e.parameter.after_seq);
   if (action === "lookup") return lookup(e.parameter.barcode);
   if (action === "prices") return pricesEndpoint(e.parameter.barcode);
@@ -139,7 +168,7 @@ function doGet(e) {
   if (action === "vocab") return vocab();
   if (action === "needsinfo") return needsInfo(e.parameter.limit);
   if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
-  return json({ ok: true, msg: "Price Scout API v9" });
+  return json({ ok: true, msg: "Price Scout API v10" });
 }
 
 /* ---- capture page: products (light) + stores ---- */
@@ -488,6 +517,191 @@ function viewdata() {
 
   return json({ ok: true, cdn: CDN_PREFIX, brands: B.arr, c1: C1.arr, c2: C2.arr, c3: C3.arr,
                 p: p, s: s, o: o, t: t, generated: day(new Date()) });
+}
+
+/* ---- precomputed analysis payload: v10's fix for viewdata's 60s/4.65MB response ---- */
+
+/** Same string-interning approach as viewdata's local `dict`, pulled out as its own instance
+ *  so buildAnalysis() can use it without touching viewdata's working code. */
+function makeDict() {
+  const m = {}, arr = [];
+  return {
+    idx: function (v) { v = String(v || ""); if (!(v in m)) { m[v] = arr.length; arr.push(v); } return m[v]; },
+    arr: arr
+  };
+}
+
+/** Middle value of a numeric array that is ALREADY sorted ascending; the mean of the two
+ *  middle values when the count is even. */
+function median(sorted) {
+  const n = sorted.length;
+  const mid = Math.floor(n / 2);
+  return (n % 2) ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** Round to 2 decimal places — prices. */
+function round2(x) {
+  return Math.round(x * 100) / 100;
+}
+
+/**
+ * Does the expensive Products+Observations read/join ONCE and writes a small, image-free
+ * summary to Drive for ?action=summary to serve. Two bulk getValues() calls total, then pure
+ * in-memory work — no getRange inside a loop — so this stays well inside the 6-minute limit
+ * even at 26k products x 45k observations.
+ *
+ * Unlike viewdata's join (raw String(barcode) on both sides, which silently drops a row when a
+ * 12-digit UPC-A observation meets a 13-digit product barcode or vice versa), this joins on
+ * normBarcode() on both sides, so that class of row is no longer lost.
+ *
+ * Returns the number of products written, so the menu item and the trigger log can report it.
+ */
+function buildAnalysis() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const tz = Session.getScriptTimeZone();
+
+  const B = makeDict(), C1 = makeDict(), C2 = makeDict(), C3 = makeDict();
+
+  // ---- Products, read once: barcode, brandIdx, item, sku, c1Idx, c2Idx, c3Idx, needsInfo01 ----
+  const ps = ss.getSheetByName("Products");
+  const pLast = ps.getLastRow();
+  const base = [];
+  const pIdxByNorm = {};   // normBarcode(barcode) -> index into base[] / the final row array
+  if (pLast > 1) {
+    const v = ps.getRange(2, 1, pLast - 1, 12).getValues();
+    v.forEach(function (r) {
+      const bc = String(r[0]); if (!bc) return;
+      pIdxByNorm[normBarcode(bc)] = base.length;
+      base.push([bc, B.idx(r[1]), r[2] || "", r[3] || "",
+        C1.idx(r[6]), C2.idx(r[7]), C3.idx(r[8]), r[11] === "YES" ? 1 : 0]);
+    });
+  }
+
+  // ---- Observations, read once.
+  //
+  // Aggregation is per (product, STORE), keeping only the LATEST price each shop quoted —
+  // not every price ever recorded. Revisiting a shop must REPLACE its previous price, not add
+  // a second vote: otherwise a product priced twice at the same store counts double, and a
+  // long-superseded price keeps dragging `ref` down for good. With the seed data (one
+  // observation per product per store) both give the same answer, so this only starts to
+  // matter once field visits accumulate — which is exactly when it would be hardest to spot.
+  // ----
+  const os = ss.getSheetByName("Observations");
+  const oLast = os.getLastRow();
+  // product index -> { normal:{storeId:{price,at}}, promo:{storeId:{price,at}} }
+  const acc = {};
+  if (oLast > 1) {
+    const v = os.getRange(2, 1, oLast - 1, 8).getValues();
+    v.forEach(function (r) {
+      if (r[4] === "" || r[4] == null) return;
+      const pi = pIdxByNorm[normBarcode(r[3])];
+      if (pi === undefined) return;
+      const price = Number(r[4]);
+      if (isNaN(price)) return;
+      const flag = String(r[5] || "normal");
+      if (flag !== "normal" && flag !== "promo") return;   // short_shelf_life is not a shelf price
+      const sid = String(r[2] || "");
+      const at = (r[1] instanceof Date) ? r[1].getTime() : 0;
+      let a = acc[pi];
+      if (!a) a = acc[pi] = { normal: {}, promo: {} };
+      const bucket = a[flag];
+      const prev = bucket[sid];
+      if (!prev || at >= prev.at) bucket[sid] = { price: price, at: at };
+    });
+  }
+
+  // ---- Combine: every product appears, with zeros when it has no observations, so the
+  // viewer's search can still find it. ----
+  const p = base.map(function (row, i) {
+    const a = acc[i];
+    let ref = 0, lo = 0, hi = 0, ns = 0, pd = 0;
+    if (a) {
+      const latest = Object.keys(a.normal).map(function (sid) { return a.normal[sid].price; });
+      if (latest.length) {
+        const sorted = latest.slice().sort(function (x, y) { return x - y; });
+        lo = sorted[0];                          // cheapest shop
+        hi = sorted[sorted.length - 1];          // priciest shop
+        ref = round2(median(sorted));
+        ns = latest.length;                      // one entry per store, so this IS the store count
+      }
+      const promos = Object.keys(a.promo).map(function (sid) { return a.promo[sid].price; });
+      if (promos.length && ref) {
+        pd = Math.round((1 - Math.min.apply(null, promos) / ref) * 1000) / 1000;
+      }
+    }
+    return row.concat([ref, lo, hi, ns, pd]);
+  });
+
+  // ---- Stores: store_id, name, region, channel ----
+  const st = ss.getSheetByName("Stores");
+  let s = [];
+  if (st.getLastRow() > 1) {
+    const v = st.getRange(2, 1, st.getLastRow() - 1, 4).getValues();
+    s = v.filter(function (r) { return r[0]; })
+         .map(function (r) { return [String(r[0]), String(r[1] || r[0]),
+                                     String(r[2] || ""), String(r[3] || "")]; });
+  }
+
+  const payload = {
+    ok: true,
+    generated: Utilities.formatDate(new Date(), tz, "yyyy-MM-dd HH:mm"),
+    brands: B.arr, c1: C1.arr, c2: C2.arr, c3: C3.arr,
+    s: s, p: p
+  };
+
+  writeAnalysisFile(JSON.stringify(payload));
+  return p.length;
+}
+
+/** The ANALYSIS_FILE inside PHOTO_FOLDER, or null if neither exists yet. */
+function findAnalysisFile(folder) {
+  const files = folder.getFilesByName(ANALYSIS_FILE);
+  return files.hasNext() ? files.next() : null;
+}
+
+/** Overwrites the existing analysis file's content rather than creating a second one — Drive
+ *  happily keeps duplicate file names, and a second copy would leave `summary` at the mercy of
+ *  whichever one the folder iterator happens to return first. */
+function writeAnalysisFile(content) {
+  const folders = DriveApp.getFoldersByName(PHOTO_FOLDER);
+  const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(PHOTO_FOLDER);
+  const existing = findAnalysisFile(folder);
+  if (existing) existing.setContent(content);
+  else folder.createFile(ANALYSIS_FILE, content, MimeType.JSON);
+}
+
+/**
+ * Serves the precomputed analysis payload straight from Drive. Reading a ~2MB file is fast —
+ * that is the entire reason this endpoint exists — so it must NOT recompute on every request;
+ * buildAnalysis() only runs here the very first time, before the file exists at all. Not backed
+ * by CacheService: the payload is around 2MB and CacheService caps out around 100KB per key.
+ */
+function summary() {
+  let folders = DriveApp.getFoldersByName(PHOTO_FOLDER);
+  let folder = folders.hasNext() ? folders.next() : null;
+  let file = folder ? findAnalysisFile(folder) : null;
+  if (!file) {
+    buildAnalysis();     // first run ever: nothing to serve yet, so build it once
+    folders = DriveApp.getFoldersByName(PHOTO_FOLDER);
+    folder = folders.hasNext() ? folders.next() : null;
+    file = folder ? findAnalysisFile(folder) : null;
+  }
+  if (!file) return json({ ok: false, error: "analysis file missing after build" });
+  return ContentService.createTextOutput(file.getBlob().getDataAsString())
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * One-time setup, same as backfillSeq() above: run this ONCE by hand from the Apps Script
+ * editor after deploying v10. It is never called from onOpen or any endpoint, so it cannot fire
+ * on its own. Deletes any existing trigger on the same handler first, so running it again after
+ * a redeploy updates the schedule instead of stacking a second daily run on top of the first.
+ */
+function installAnalysisTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === "buildAnalysis") ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger("buildAnalysis").timeBased().atHour(3).everyDays(1).create();
 }
 
 /* ================= POST ================= */
