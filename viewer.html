@@ -52,6 +52,32 @@ main{padding:16px}
 .chips button{padding:8px 13px; border-radius:99px; border:1.5px solid var(--line); background:var(--card); font-weight:600; font-size:12.5px}
 .chips button.on{background:var(--tag); border-color:var(--tag); color:var(--tag-ink)}
 .chips.lvl2 button.on{background:var(--ink); border-color:var(--ink); color:#fff}
+/* ---- หมวดย่อย (c2/c3) multi-select dropdowns — same idea as .combo/.combo-list elsewhere in this
+   app (button + absolutely-positioned panel), but with a checkbox per row since several options can
+   be active at once. Real category data wraps a chip row over many lines before a single number is
+   reached, so these two levels get a compact button instead. ---- */
+.mselect-row{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px}
+.mselect{position:relative}
+.mselect-btn{padding:8px 13px 8px 14px; border-radius:99px; border:1.5px solid var(--line); background:var(--card);
+  font-weight:600; font-size:12.5px; display:inline-flex; align-items:center; gap:7px; max-width:260px}
+.mselect-btn span{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.mselect-btn::after{content:'▾'; font-size:10px; color:var(--mut); flex:none}
+.mselect-btn.on{background:var(--ink); border-color:var(--ink); color:#fff}
+.mselect-btn.on::after{color:#fff}
+.mselect-btn:disabled{opacity:.45; cursor:default}
+.mselect-panel{position:absolute; left:0; top:calc(100% + 4px); z-index:40; min-width:230px;
+  background:var(--card); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow);
+  max-height:300px; overflow-y:auto}
+.mselect-hd{font-size:11px; font-weight:700; color:var(--mut); text-transform:uppercase; letter-spacing:.6px;
+  padding:9px 13px 5px}
+.mselect-opt{display:flex; align-items:center; gap:9px; padding:9px 13px; font-size:13.5px; font-weight:600;
+  cursor:pointer; border-bottom:1px solid var(--line)}
+.mselect-opt:last-child{border-bottom:none}
+.mselect-opt:hover{background:var(--paper)}
+.mselect-opt input{flex:none; width:16px; height:16px; accent-color:var(--tag)}
+.mselect-opt-name{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.mselect-opt-n{color:var(--mut); font-size:11.5px; font-weight:700; font-family:'IBM Plex Mono',monospace; flex:none}
+.mselect-all{background:var(--paper); border-bottom:1.5px solid var(--line)}
 .panel{background:var(--card); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow); padding:16px; margin-bottom:14px}
 .eyebrow{font-size:11px; font-weight:700; letter-spacing:1px; color:var(--mut); text-transform:uppercase; margin-bottom:10px}
 .stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:4px}
@@ -178,8 +204,19 @@ footer button:disabled{opacity:.5; cursor:default}
 
   <section id="vCat" class="hidden">
     <div class="chips" id="c1Chips"></div>
-    <div class="chips lvl2" id="c2Chips"></div>
-    <div class="chips" id="c3Chips"></div>
+    <!-- หมวดย่อย (c2) / รายการ (c3) — compact multi-select dropdowns, not chip rows; see buildCat()
+         and renderMSelect(). Both sit on one row so the two levels take roughly the space of a
+         single old chip row. -->
+    <div class="mselect-row">
+      <div class="mselect" id="c2Dd">
+        <button type="button" class="mselect-btn" id="c2Btn" aria-haspopup="true" aria-expanded="false"><span></span></button>
+        <div class="mselect-panel hidden" id="c2Panel"></div>
+      </div>
+      <div class="mselect" id="c3Dd">
+        <button type="button" class="mselect-btn" id="c3Btn" aria-haspopup="true" aria-expanded="false"><span></span></button>
+        <div class="mselect-panel hidden" id="c3Panel"></div>
+      </div>
+    </div>
     <!-- ร้านค้าที่ใช้วิเคราะห์ — hidden entirely until a payload carrying `o` (price observations)
          has loaded, so a stale pre-`o` cache never offers a filter it cannot actually compute. -->
     <div class="panel hidden" id="catFilterPanel">
@@ -465,6 +502,10 @@ let started = false, detailReq = 0;
 // store indices from a previous generation must not linger).
 let c1Sel = new Set(), c2Sel = new Set(), c3Sel = new Set();
 let catChanSel = new Set(), catStoreSel = new Set(), HAS_OBS = false, storesGen = 0, catFilterStoresGen = -1;
+// Which of the c2/c3 dropdown panels (see renderMSelect()) is currently open — 'c2', 'c3', or null.
+// Only one may be open at a time; buildCat() re-renders both panels' contents on every facet
+// change but never touches this, so an open panel stays open across a checkbox click.
+let openMSelect = null;
 // Sort state for the หมวดหมู่ brand table — a plain module var (not `ls`) so it need not survive
 // a reload, but it must survive re-filtering rows via the c1/c2/c3 chips within this page life.
 // Default reproduces the table's original hard-coded order (most products first).
@@ -853,10 +894,12 @@ function closeOverlay(){ $("ov").style.display = 'none'; curDetailBc = null; }
 
 /* ================= CATEGORY ================= */
 function med(a){ const s=[...a].sort((x,y)=>x-y); const m=s.length>>1; return s.length%2 ? s[m] : (s[m-1]+s[m])/2 }
-// Multi-select chip row, shared by all four หมวดหมู่ facets (c1/c2/c3/channel — stores get their
-// own renderer since it needs per-store labels/counts from STORES rather than `list`). Every row
-// always gets a ทั้งหมด chip that clears the whole facet; it renders "on" exactly when selSet is
-// empty. Any other chip toggles its own value in/out of selSet (see setC1/setC2/setC3/setCatChan).
+// Multi-select chip row, shared by the c1 and channel หมวดหมู่ facets (c2/c3 use the dropdown
+// panels below instead — see renderMSelect() — since real category data wraps a chip row over
+// many lines; stores get their own renderer since it needs per-store labels/counts from STORES
+// rather than `list`). Every row always gets a ทั้งหมด chip that clears the whole facet; it renders
+// "on" exactly when selSet is empty. Any other chip toggles its own value in/out of selSet (see
+// setC1/setCatChan).
 function chipRow(el, list, selSet, labelFor){
   const allBtn = `<button class="${selSet.size===0?'on':''}" data-val="__ALL__">ทั้งหมด</button>`;
   const rest = list.map(v =>
@@ -865,6 +908,11 @@ function chipRow(el, list, selSet, labelFor){
 }
 function counts(arr){ const m={}; arr.forEach(v=>{ if(v) m[v]=(m[v]||0)+1 });
   return Object.keys(m).sort((a,b)=>m[b]-m[a]); }
+// Same value+frequency counting as counts(), but keeps the numbers rather than discarding them —
+// [[value,n], ...] in the same descending-by-count order counts() already produces. Used by the
+// c2/c3 dropdown panels (renderMSelect()) to show each option's count without a second pass over P.
+function countsN(arr){ const m={}; arr.forEach(v=>{ if(v) m[v]=(m[v]||0)+1 });
+  return Object.keys(m).sort((a,b)=>m[b]-m[a]).map(v=>[v, m[v]]); }
 // Drops any selected values no longer present in `allowed` — used whenever a facet's option list
 // narrows (the category cascade, or the store pool changing with the channel facet), so a
 // selection can never keep filtering after it has silently disappeared from its own chip row.
@@ -973,14 +1021,14 @@ function buildCat(){
   chipRow($("c1Chips"), c1s, c1Sel);
 
   const c1Pool = P.filter(p=>c1Sel.size===0 || c1Sel.has(p.c1));
-  const c2s = counts(c1Pool.map(p=>p.c2));
-  c2Sel = pruneSet(c2Sel, c2s);
-  chipRow($("c2Chips"), c2s, c2Sel);
+  const c2pairs = countsN(c1Pool.map(p=>p.c2));
+  c2Sel = pruneSet(c2Sel, c2pairs.map(x=>x[0]));
+  renderMSelect('c2', c2pairs, c2Sel, 'หมวดย่อย');
 
   const c12Pool = c1Pool.filter(p=>c2Sel.size===0 || c2Sel.has(p.c2));
-  const c3s = counts(c12Pool.map(p=>p.c3));
-  c3Sel = pruneSet(c3Sel, c3s);
-  chipRow($("c3Chips"), c3s, c3Sel);
+  const c3pairs = countsN(c12Pool.map(p=>p.c3));
+  c3Sel = pruneSet(c3Sel, c3pairs.map(x=>x[0]));
+  renderMSelect('c3', c3pairs, c3Sel, 'รายการ');
 
   // Reset the channel/store filter exactly once per fresh STORES array (a new decode()), never on
   // an ordinary category-chip click within the same payload — see storesGen/catFilterStoresGen.
@@ -995,6 +1043,53 @@ function buildCat(){
 function setC1(v){ c1Sel = v==='__ALL__' ? new Set() : toggleInSet(c1Sel, v); buildCat(); }
 function setC2(v){ c2Sel = v==='__ALL__' ? new Set() : toggleInSet(c2Sel, v); buildCat(); }
 function setC3(v){ c3Sel = v==='__ALL__' ? new Set() : toggleInSet(c3Sel, v); buildCat(); }
+/**
+ * Renders one of the c2/c3 multi-select dropdowns: the compact button (label via summarizeSet() —
+ * reused rather than re-derived, so this button and #catFilterLabel can never disagree) plus its
+ * checkbox panel. `which` is 'c2' or 'c3'; `pairs` is [[value,count], ...] from countsN(), already
+ * in the same order counts() uses elsewhere. Only rebuilds content — open/closed state lives in
+ * openMSelect and is untouched here, so an open panel stays open across every re-render this causes
+ * (every facet click re-runs buildCat(), which calls this for both levels every time).
+ */
+function renderMSelect(which, pairs, selSet, unit){
+  const btn = $(which + 'Btn'), panel = $(which + 'Panel');
+  const disabled = pairs.length === 0;
+  btn.disabled = disabled;
+  btn.querySelector('span').textContent = disabled ? '—' : (summarizeSet(selSet, unit) || 'ทั้งหมด');
+  btn.classList.toggle('on', selSet.size > 0);
+  if(disabled){
+    panel.innerHTML = '';
+    if(openMSelect === which) closeMSelect(false);   // its own options just vanished — nothing left to show
+    btn.setAttribute('aria-expanded', 'false');
+    return;
+  }
+  btn.setAttribute('aria-expanded', String(openMSelect === which));
+  const allRow = `<label class="mselect-opt mselect-all"><input type="checkbox" data-val="__ALL__" ${selSet.size===0?'checked':''}><span class="mselect-opt-name">ทั้งหมด</span></label>`;
+  const rows = pairs.map(([v,n]) => `<label class="mselect-opt">
+    <input type="checkbox" data-val="${esc(v)}" ${selSet.has(v)?'checked':''}>
+    <span class="mselect-opt-name">${esc(v)}</span><span class="mselect-opt-n">${n.toLocaleString()}</span></label>`).join('');
+  panel.innerHTML = `<div class="mselect-hd">${pairs.length.toLocaleString()} ตัวเลือก</div>${allRow}${rows}`;
+}
+// Only one of the two dropdown panels may be open at a time. restoreFocus is true for a deliberate
+// close (Escape, or a second click of the panel's own button) so the trigger button keeps keyboard
+// focus rather than losing it to document.body when the panel is hidden; it is false for an
+// outside-click close, where focus should land wherever the user actually clicked instead.
+function closeMSelect(restoreFocus){
+  if(!openMSelect) return;
+  const which = openMSelect;
+  $(which + 'Panel').classList.add('hidden');
+  $(which + 'Btn').setAttribute('aria-expanded', 'false');
+  openMSelect = null;
+  if(restoreFocus) $(which + 'Btn').focus();
+}
+function toggleMSelect(which){
+  if($(which + 'Btn').disabled) return;
+  if(openMSelect === which){ closeMSelect(true); return; }
+  closeMSelect(false);
+  openMSelect = which;
+  $(which + 'Panel').classList.remove('hidden');
+  $(which + 'Btn').setAttribute('aria-expanded', 'true');
+}
 // A product is included when ALL THREE facets allow it — an empty facet imposes no restriction —
 // so c1/c2/c3 behave as independent facets rather than a forced drill-down cascade.
 function catItems(){
@@ -1253,8 +1348,20 @@ function initEvents(){
   $("results").addEventListener('click', e=>{ const c=e.target.closest('.pcard'); if(c) openDetail(c.dataset.bc); });
 
   $("c1Chips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setC1(b.dataset.val); });
-  $("c2Chips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setC2(b.dataset.val); });
-  $("c3Chips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setC3(b.dataset.val); });
+  // c2/c3 dropdowns: the button opens/closes its own panel (native click also fires for Enter/Space
+  // on a <button>, so no extra keydown handling is needed); the panel's checkboxes update the Set
+  // via 'change' (bubbles, so one delegated listener per panel is enough — same delegation pattern
+  // as every other dynamic list in this file). buildCat() re-renders both panels on every change,
+  // which is what makes the counts move live with no Apply step.
+  $("c2Btn").addEventListener('click', ()=>toggleMSelect('c2'));
+  $("c3Btn").addEventListener('click', ()=>toggleMSelect('c3'));
+  $("c2Panel").addEventListener('change', e=>{ const cb=e.target.closest('input[type=checkbox]'); if(cb) setC2(cb.dataset.val); });
+  $("c3Panel").addEventListener('change', e=>{ const cb=e.target.closest('input[type=checkbox]'); if(cb) setC3(cb.dataset.val); });
+  // A click anywhere outside the open panel's own button+panel wrapper closes it — focus is left
+  // wherever the click actually landed (see closeMSelect()'s restoreFocus param).
+  document.addEventListener('click', e=>{
+    if(openMSelect && !e.target.closest('#' + openMSelect + 'Dd')) closeMSelect(false);
+  });
   $("catChanChips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setCatChan(b.dataset.val); });
   $("catStoreChips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) toggleCatStore(b.dataset.val); });
   $("catBrandRows").addEventListener('click', e=>{ const r=e.target.closest('tr[data-brand]'); if(r) openBrandModal(r.dataset.brand); });
@@ -1273,13 +1380,16 @@ function initEvents(){
   $("bmRows").addEventListener('click', e=>{ const r=e.target.closest('tr[data-bc]'); if(r) openDetail(r.dataset.bc); });
 
   // Escape closes whichever overlay is on top (detail sheet, if open, sits above the brand
-  // modal — see the z-index comment on #bmOv/#ov — so it must close first). Tab is trapped
+  // modal — see the z-index comment on #bmOv/#ov — so it must close first); a c2/c3 dropdown
+  // panel is checked last since it can never be open at the same time as either overlay is
+  // reachable-and-relevant here, but the order still matters if it somehow were. Tab is trapped
   // inside the brand modal only while it is the topmost overlay; the detail sheet has never
   // had its own trap and this change does not add one.
   document.addEventListener('keydown', e=>{
     if(e.key === 'Escape'){
       if(isDetailOpen()) closeOverlay();
       else if(isBrandModalOpen()) closeBrandModal();
+      else if(openMSelect) closeMSelect(true);
     } else if(e.key === 'Tab' && isBrandModalOpen() && !isDetailOpen()){
       trapFocus(e, $("bmOv"));
     }
