@@ -113,6 +113,34 @@ th[data-key] .sortarrow{margin-left:3px; display:inline-block}
 .bar-row .track{flex:1; height:16px; background:var(--paper); border:1px solid var(--line); border-radius:6px; overflow:hidden}
 .bar-row .fill{height:100%; background:var(--tag)}
 .bar-row .val{width:56px; text-align:right; font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:12.5px}
+/* ---- เทียบสินค้า (product-vs-product compare) — two independent columns, each holding its own
+   search box + results list until a product is chosen, then a picked-product card. Deliberately
+   its own class names (cmp-*) so it can never bleed into .compare/.brand-pick (เทียบแบรนด์). ---- */
+.cmp-ctrl-row{display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:10px}
+.cmp-ctrl-lbl{font-size:12.5px; font-weight:700; color:var(--mut)}
+.cmp-cols{display:grid; grid-template-columns:1fr 1fr; gap:14px}
+@media(max-width:640px){.cmp-cols{grid-template-columns:1fr}}
+.cmp-col{background:var(--card); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow); padding:14px; min-width:0}
+.cmp-results{margin-top:8px; max-height:340px; overflow-y:auto; border-radius:10px}
+.cmp-results:not(:empty){border:1px solid var(--line)}
+.cmp-result{padding:9px 12px; border-bottom:1px solid var(--line); cursor:pointer}
+.cmp-result:last-child{border-bottom:none}
+.cmp-result:hover{background:var(--paper)}
+.cmp-result .cr-brand{font-size:10px; font-weight:800; color:var(--tag-deep); text-transform:uppercase; min-height:12px}
+.cmp-result .cr-item{font-size:13px; font-weight:700; line-height:1.3}
+.cmp-result .cr-sub{font-size:11.5px; color:var(--mut); font-family:'IBM Plex Mono',monospace}
+.cmp-picked-top{display:flex; gap:12px; align-items:flex-start}
+.cmp-imgwrap{width:88px; height:88px; flex:none; background:#fff; border:1px solid var(--line); border-radius:12px;
+  display:grid; place-items:center; overflow:hidden}
+.cmp-imgwrap img{width:100%; height:100%; object-fit:contain}
+.cmp-imgwrap .noimg{color:var(--line); font-size:26px; font-weight:800}
+.cmp-title-btn{display:block; font-size:15px; font-weight:800; line-height:1.25; text-align:left; cursor:pointer; color:var(--ink); padding:0; margin:2px 0}
+.cmp-title-btn:hover{text-decoration:underline}
+.cmp-picked .sku{font-size:12px; color:var(--mut); font-weight:600}
+.cmp-picked .bc{font-size:11.5px; color:var(--mut); font-family:'IBM Plex Mono',monospace; margin-top:4px}
+.cmp-clearx{margin-left:auto; font-size:18px; color:var(--mut); padding:2px 6px; flex:none; cursor:pointer}
+.cmp-strip-row{font-size:13.5px; margin:7px 0; line-height:1.5}
+.cmp-strip-row b{font-family:'IBM Plex Mono',monospace}
 #ov{position:fixed; inset:0; background:rgba(23,25,28,.5); z-index:40; display:none; overflow:auto; padding:20px 14px}
 #ov .sheet{max-width:560px; margin:0 auto; background:var(--card); border-radius:18px; padding:18px; box-shadow:var(--shadow)}
 #ov .top{display:flex; gap:16px}
@@ -186,6 +214,7 @@ footer button:disabled{opacity:.5; cursor:default}
     <button id="tabSearch" class="on">ค้นหา</button>
     <button id="tabCat">หมวดหมู่</button>
     <button id="tabBrand">เทียบแบรนด์</button>
+    <button id="tabCompare">เทียบสินค้า</button>
   </nav>
 </header>
 
@@ -252,6 +281,35 @@ footer button:disabled{opacity:.5; cursor:default}
       <select id="brandA"></select><div class="vs">VS</div><select id="brandB"></select>
     </div>
     <div class="compare" id="compareWrap"></div>
+  </section>
+
+  <section id="vCompare" class="hidden">
+    <div class="panel">
+      <div class="eyebrow">เทียบสินค้า</div>
+      <div class="meta-line" id="cmpEmptyMsg">เลือกสินค้าสองชิ้นด้านล่างเพื่อเทียบราคากันแบบเคียงข้าง</div>
+      <div class="cmp-ctrl-row">
+        <span class="cmp-ctrl-lbl">ร้านค้าอย่างน้อย</span>
+        <div class="chips" id="cmpMinChips"></div>
+        <span class="meta-line" id="cmpEligible" style="margin:0"></span>
+      </div>
+    </div>
+    <div class="cmp-cols">
+      <div class="cmp-col">
+        <div id="cmpSearchL">
+          <div class="searchbar" style="margin-bottom:0"><input type="text" id="cmpQL" placeholder="ค้นหาสินค้าฝั่งซ้าย…" autocomplete="off"></div>
+          <div class="cmp-results" id="cmpResL"></div>
+        </div>
+        <div class="hidden" id="cmpPickedL"></div>
+      </div>
+      <div class="cmp-col">
+        <div id="cmpSearchR">
+          <div class="searchbar" style="margin-bottom:0"><input type="text" id="cmpQR" placeholder="ค้นหาสินค้าฝั่งขวา…" autocomplete="off"></div>
+          <div class="cmp-results" id="cmpResR"></div>
+        </div>
+        <div class="hidden" id="cmpPickedR"></div>
+      </div>
+    </div>
+    <div class="panel hidden" id="cmpStrip"></div>
   </section>
 </main>
 
@@ -523,6 +581,11 @@ let catFilterLabelCur = '';
 // IMG holds the last-loaded payload so it can be re-applied to P every time decode() rebuilds it
 // (a plain refresh/rebuild replaces P entirely, which would otherwise drop the img field).
 let IMG = null, imgFetchedOnce = false, imgLenWarned = false, SUMMARY_GENERATED = null;
+// เทียบสินค้า (product-vs-product compare) — two independently chosen products keyed 'L'/'R', plus
+// a shared minimum-store-count filter (against each product's precomputed `ns`) that only narrows
+// what each side's OWN search offers. Entirely separate from the หมวดหมู่ store/category filter —
+// this tab must never read c1Sel/catStoreSel etc., and that filter must never read cmpMinStores.
+let cmpMinStores = 1, cmpProd = { L: null, R: null }, cmpDebL, cmpDebR;
 
 /**
  * Decode the ?action=summary payload. Everything here is already aggregated server-side —
@@ -716,6 +779,7 @@ function renderCurrent(){
   if(curTab === 'search') renderSearch($("q").value);
   if(curTab === 'cat') buildCat();
   if(curTab === 'brand'){ buildBrand(); renderCompare(); }
+  if(curTab === 'compare') cmpRenderAll();
 }
 
 /* ================= SEARCH =================
@@ -729,11 +793,15 @@ function tokenScore(t, words){ let best=0;
     else if(w.includes(t)) best=Math.max(best,1.6);
     else if(t.length>=4 && Math.abs(w.length-t.length)<=2 && ed1(t,w)) best=Math.max(best,1.2); }
   return best; }
-function doSearch(q){
+// `pool` defaults to P for the ค้นหา tab's own call site (renderSearch below); the เทียบสินค้า tab
+// passes its own (ns-filtered) pool so both tabs rank a query with the exact same scorer instead
+// of a second one drifting out of sync with this one.
+function doSearch(q, pool){
+  if(!pool) pool = P;
   const toks = q.toLowerCase().normalize('NFC').split(/\s+/).filter(Boolean);
   if(!toks.length) return [];
   const out=[];
-  for(const p of P){ let s=0, ok=true;
+  for(const p of pool){ let s=0, ok=true;
     for(const t of toks){ const ts=tokenScore(t,p.words); if(!ts){ok=false;break} s+=ts; }
     if(ok) out.push([s,p]); }
   out.sort((a,b)=>b[0]-a[0]);
@@ -1316,6 +1384,178 @@ function renderCompare(){
   $("compareWrap").innerHTML = brandCard($("brandA").value) + brandCard($("brandB").value);
 }
 
+/* ================= COMPARE PRODUCTS (เทียบสินค้า) =================
+   Two independently-chosen products side by side. Search reuses doSearch()'s pool argument (see
+   above) so ranking never disagrees with the ค้นหา tab. The minimum-store filter only restricts
+   the SEARCH pool on both sides — it does not affect, and is not affected by, the หมวดหมู่ tab's
+   channel/store filter (separate state entirely: cmpMinStores vs catChanSel/catStoreSel). */
+function cmpPool(){ return P.filter(p => p.ns >= cmpMinStores); }
+function renderCmpControls(){
+  const opts = [1,2,3,4,5];
+  $("cmpMinChips").innerHTML = opts.map(n =>
+    `<button class="${cmpMinStores===n?'on':''}" data-val="${n}">${n===5?'5+':n}</button>`).join('');
+  const n = cmpPool().length;
+  $("cmpEligible").textContent = `มีสินค้า ${n.toLocaleString()} รายการที่อยู่ใน ≥${cmpMinStores} ร้าน`;
+}
+function setCmpMin(v){
+  cmpMinStores = Number(v);
+  renderCmpControls();
+  // Re-run whichever side already has a query typed so the list matches the new pool right away,
+  // rather than waiting on the next keystroke.
+  cmpDoSearch('L', $("cmpQL").value);
+  cmpDoSearch('R', $("cmpQR").value);
+}
+function cmpResultHtml(p){
+  return `<div class="cmp-result" data-bc="${esc(p.bc)}">
+    <div class="cr-brand">${esc(p.brand)||'&nbsp;'}</div>
+    <div class="cr-item">${esc(p.item)||esc(p.bc)}</div>
+    <div class="cr-sub">${esc(p.sku)}${p.sku?' · ':''}${fmt(p.ref)}</div>
+  </div>`;
+}
+function cmpDoSearch(side, q){
+  const el = $(side==='L' ? 'cmpResL' : 'cmpResR');
+  const query = q.trim();
+  if(!query){ el.innerHTML = ''; return; }
+  const res = doSearch(query, cmpPool());
+  el.innerHTML = res.slice(0,20).map(cmpResultHtml).join('');
+}
+function cmpPick(side, bc){
+  const p = PBY_BC.get(bc);
+  if(!p) return;
+  cmpProd[side] = p;
+  $(side==='L' ? 'cmpQL' : 'cmpQR').value = '';
+  $(side==='L' ? 'cmpResL' : 'cmpResR').innerHTML = '';
+  renderCmpSide(side);
+  renderCmpEmptyMsg();
+  renderCmpStrip();
+}
+function cmpClearSide(side){
+  cmpProd[side] = null;
+  renderCmpSide(side);
+  renderCmpEmptyMsg();
+  renderCmpStrip();
+}
+/**
+ * The per-store table for one picked product, built from p.obs (see decode()). A payload cached
+ * from before `o` existed leaves obs empty for every product — that must show an explanatory note,
+ * never a silently-empty table, since an empty table with no explanation looks like a bug.
+ */
+function cmpStoreRows(p){
+  if(!p.obs.length) return `<div class="meta-line" style="margin:10px 2px 0">ไม่มีรายละเอียดรายร้าน</div>`;
+  const rows = p.obs.map(o=>{
+    const st = STORES[o.s];
+    const promo = o.flag === 1;
+    return `<tr><td>${esc(st ? st.name : '?')}${promo?'<span class="flagpill promo">โปรฯ</span>':''}</td>
+      <td>${esc(st ? st.channel : '')}</td>
+      <td class="num" style="${promo?'color:var(--amber); font-weight:700':''}">${fmt(o.price)}</td></tr>`;
+  }).join('');
+  return `<table style="margin-top:10px"><thead><tr><th>ร้าน</th><th>ช่องทาง</th><th class="num">ราคา</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+function renderCmpSide(side){
+  const searchWrap = $(side==='L' ? 'cmpSearchL' : 'cmpSearchR');
+  const picked = $(side==='L' ? 'cmpPickedL' : 'cmpPickedR');
+  const p = cmpProd[side];
+  if(!p){
+    searchWrap.classList.remove('hidden');
+    picked.classList.add('hidden');
+    picked.innerHTML = '';
+    return;
+  }
+  searchWrap.classList.add('hidden');
+  picked.classList.remove('hidden');
+  const img = p.img
+    ? `<div class="cmp-imgwrap"><img alt="" src="${esc(p.img)}"></div>`
+    : `<div class="cmp-imgwrap"><div class="noimg">?</div></div>`;
+  const catPath = [p.c1,p.c2,p.c3].filter(Boolean).join(' › ');
+  const sizeUnit = [p.size,p.unit].filter(Boolean).join(' ');
+  const range = p.lo===p.hi ? fmt(p.lo) : `${fmt(p.lo)}–${fmt(p.hi)}`;
+  const promoStat = p.pd>0 ? `<div class="stat"><b>${Math.round(p.pd*100)}%</b><span>ลดโปรฯ</span></div>` : '';
+  picked.innerHTML = `
+    <div class="cmp-picked-top">
+      ${img}
+      <div style="flex:1; min-width:0">
+        <div class="brand">${esc(p.brand)||'&nbsp;'}</div>
+        <button type="button" class="cmp-title-btn" data-bc="${esc(p.bc)}">${esc(p.item)||esc(p.bc)}</button>
+        <div class="sku">${[esc(p.sku), esc(sizeUnit)].filter(Boolean).join(' · ')}</div>
+        <div class="bc">${esc(p.bc)}</div>
+        <div class="meta-line" style="margin:4px 2px 0">${esc(catPath)}</div>
+      </div>
+      <div class="cmp-clearx" data-side="${side}" role="button" aria-label="ล้าง">✕</div>
+    </div>
+    <div class="stats" style="margin-top:12px">
+      <div class="stat"><b>${fmt(p.ref)}</b><span>ราคากลาง</span></div>
+      <div class="stat"><b>${range}</b><span>ช่วงราคา</span></div>
+      <div class="stat"><b>${p.ns}</b><span>จำนวนร้าน</span></div>
+      ${promoStat}
+    </div>
+    ${cmpStoreRows(p)}
+  `;
+}
+/** Price-per-unit, only meaningful when the product has a numeric size and a real ref price. */
+function cmpUnitPrice(p){
+  const sizeNum = parseFloat(p.size);
+  if(!p.size || !isFinite(sizeNum) || sizeNum<=0 || !p.ref) return null;
+  return p.ref / sizeNum;
+}
+/**
+ * The intro line only makes sense before either side has a product — once one side is picked, its
+ * own card explains itself and the empty side still shows its search box, so the line would just
+ * be clutter.
+ */
+function renderCmpEmptyMsg(){
+  $("cmpEmptyMsg").classList.toggle('hidden', !!(cmpProd.L || cmpProd.R));
+}
+/**
+ * Shown only once BOTH sides are filled (per spec). Price-per-unit is shown only when both
+ * products carry a size AND share the same unit — comparing ฿/G against ฿/ML would be worse than
+ * showing nothing, so a mismatched or missing unit renders no unit-price line at all.
+ */
+function renderCmpStrip(){
+  const L = cmpProd.L, R = cmpProd.R;
+  const strip = $("cmpStrip");
+  if(!L || !R){ strip.classList.add('hidden'); strip.innerHTML = ''; return; }
+  let html = `<div class="eyebrow">เปรียบเทียบ</div>`;
+  if(L.ref && R.ref){
+    const diff = Math.abs(L.ref - R.ref);
+    if(diff === 0){
+      html += `<div class="cmp-strip-row">ราคากลางเท่ากันที่ <b>${fmt(L.ref)}</b></div>`;
+    } else {
+      const cheaper = L.ref < R.ref ? L : R, pricier = L.ref < R.ref ? R : L;
+      const pct = Math.round(diff/cheaper.ref*100);
+      html += `<div class="cmp-strip-row"><b>${esc(cheaper.item||cheaper.bc)}</b> ถูกกว่า <b>${esc(pricier.item||pricier.bc)}</b> อยู่ <b>${fmt(diff)}</b> (${pct}% ของราคาที่ถูกกว่า)</div>`;
+    }
+  } else {
+    html += `<div class="cmp-strip-row" style="color:var(--mut)">ยังไม่มีราคากลางครบทั้งสองฝั่ง จึงเทียบราคาไม่ได้</div>`;
+  }
+  html += `<div class="cmp-strip-row">จำนวนร้าน: <b>${L.ns}</b> vs <b>${R.ns}</b></div>`;
+  const upL = cmpUnitPrice(L), upR = cmpUnitPrice(R);
+  // Compare units case- and whitespace-insensitively: "ML" and "ml " are the same unit, and
+  // refusing to compare them would be a needless miss. Still strict about them MATCHING —
+  // a false positive here (฿/G against ฿/ML) is far worse than showing nothing.
+  const uL = String(L.unit||'').trim().toUpperCase(), uR = String(R.unit||'').trim().toUpperCase();
+  if(upL!=null && upR!=null && uL && uL===uR){
+    const betterIsL = upL <= upR;
+    const betterName = esc((betterIsL ? L : R).item || (betterIsL ? L : R).bc);
+    html += `<div class="cmp-strip-row">ราคาต่อหน่วย: <b>${fmt(upL)}</b>/${esc(L.unit)} vs <b>${fmt(upR)}</b>/${esc(R.unit)} — <b>${betterName}</b> คุ้มกว่า</div>`;
+  }
+  strip.innerHTML = html;
+  strip.classList.remove('hidden');
+}
+// Re-syncs cmpProd with the current P/PBY_BC after a fresh decode() (refresh/rebuild rebuilds P
+// from scratch, so old object references would otherwise point at a discarded generation) and
+// repaints everything the tab shows. Safe to call whenever — a no-op on the parts with nothing
+// picked.
+function cmpRenderAll(){
+  cmpProd.L = cmpProd.L ? (PBY_BC.get(cmpProd.L.bc) || null) : null;
+  cmpProd.R = cmpProd.R ? (PBY_BC.get(cmpProd.R.bc) || null) : null;
+  renderCmpControls();
+  renderCmpSide('L');
+  renderCmpSide('R');
+  renderCmpEmptyMsg();
+  renderCmpStrip();
+}
+
 /* ================= TABS ================= */
 function tab(t){
   curTab=t;
@@ -1323,13 +1563,16 @@ function tab(t){
   $("vSearch").classList.toggle('hidden', t!=='search');
   $("vCat").classList.toggle('hidden', t!=='cat');
   $("vBrand").classList.toggle('hidden', t!=='brand');
+  $("vCompare").classList.toggle('hidden', t!=='compare');
   $("tabSearch").classList.toggle('on', t==='search');
   $("tabCat").classList.toggle('on', t==='cat');
   $("tabBrand").classList.toggle('on', t==='brand');
+  $("tabCompare").classList.toggle('on', t==='compare');
   if(!started) return;
   if(t==='search' && !$("results").innerHTML) renderSearch('');
   if(t==='cat') buildCat();
   if(t==='brand' && !$("compareWrap").innerHTML) renderCompare();
+  if(t==='compare') cmpRenderAll();
 }
 
 /* ================= EVENTS =================
@@ -1341,6 +1584,7 @@ function initEvents(){
   $("tabSearch").addEventListener('click', ()=>tab('search'));
   $("tabCat").addEventListener('click', ()=>tab('cat'));
   $("tabBrand").addEventListener('click', ()=>tab('brand'));
+  $("tabCompare").addEventListener('click', ()=>tab('compare'));
   $("refreshBtn").addEventListener('click', refresh);
   $("rebuildBtn").addEventListener('click', doRebuild);
 
@@ -1370,6 +1614,22 @@ function initEvents(){
   $("bCat").addEventListener('change', ()=>{ fillBrandSelects(); renderCompare(); });
   $("brandA").addEventListener('change', renderCompare);
   $("brandB").addEventListener('change', renderCompare);
+
+  // เทียบสินค้า — one search box + one results list + one picked-card container per side, all
+  // wired the same delegated way as ค้นหา above.
+  $("cmpMinChips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setCmpMin(b.dataset.val); });
+  $("cmpQL").addEventListener('input', e=>{ clearTimeout(cmpDebL); cmpDebL=setTimeout(()=>cmpDoSearch('L', e.target.value),120); });
+  $("cmpQR").addEventListener('input', e=>{ clearTimeout(cmpDebR); cmpDebR=setTimeout(()=>cmpDoSearch('R', e.target.value),120); });
+  $("cmpResL").addEventListener('click', e=>{ const r=e.target.closest('.cmp-result'); if(r) cmpPick('L', r.dataset.bc); });
+  $("cmpResR").addEventListener('click', e=>{ const r=e.target.closest('.cmp-result'); if(r) cmpPick('R', r.dataset.bc); });
+  $("cmpPickedL").addEventListener('click', e=>{
+    if(e.target.closest('.cmp-clearx')){ cmpClearSide('L'); return; }
+    const t=e.target.closest('.cmp-title-btn'); if(t) openDetail(t.dataset.bc);
+  });
+  $("cmpPickedR").addEventListener('click', e=>{
+    if(e.target.closest('.cmp-clearx')){ cmpClearSide('R'); return; }
+    const t=e.target.closest('.cmp-title-btn'); if(t) openDetail(t.dataset.bc);
+  });
 
   $("closeOv").addEventListener('click', closeOverlay);
   $("ov").addEventListener('click', e=>{ if(e.target.id==='ov') closeOverlay(); });
