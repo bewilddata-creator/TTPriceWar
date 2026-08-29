@@ -141,6 +141,27 @@ th[data-key] .sortarrow{margin-left:3px; display:inline-block}
 .cmp-clearx{margin-left:auto; font-size:18px; color:var(--mut); padding:2px 6px; flex:none; cursor:pointer}
 .cmp-strip-row{font-size:13.5px; margin:7px 0; line-height:1.5}
 .cmp-strip-row b{font-family:'IBM Plex Mono',monospace}
+/* ---- เลือกจากรายการ (เทียบสินค้า) — a browse picker per side, reusing the c2/c3 dropdown's
+   .mselect/.mselect-btn/.mselect-panel shell (see renderCmpPickPanel() etc. in the script). Only
+   .cmp-pick-panel overrides width/anchor since this panel lists product rows (brand/item/sku +
+   store count/price) rather than short checkbox labels, and sits at the right end of a search bar
+   instead of a standalone chip row. ---- */
+.cmp-pick-panel{left:auto; right:0; min-width:300px; max-width:380px}
+.mselect-pick-search{position:sticky; top:0; background:var(--card); padding:9px 10px; border-bottom:1px solid var(--line)}
+.mselect-pick-search input{width:100%; padding:8px 10px; font-size:13px; font-weight:600; border:1.5px solid var(--line); border-radius:9px; background:var(--paper)}
+.mselect-pick-search input:focus{outline:none; border-color:var(--ink)}
+.mselect-pick-row{display:flex; align-items:center; gap:10px; padding:9px 13px; border-bottom:1px solid var(--line); cursor:pointer}
+.mselect-pick-row:last-child{border-bottom:none}
+.mselect-pick-row:hover{background:var(--paper)}
+.mselect-pick-info{flex:1; min-width:0}
+.mselect-pick-brand{font-size:10.5px; font-weight:700; color:var(--mut); text-transform:uppercase; min-height:13px}
+.mselect-pick-item{font-size:13px; font-weight:700; line-height:1.3}
+.mselect-pick-sku{font-size:11px; font-weight:600; color:var(--mut); font-family:'IBM Plex Mono',monospace}
+.mselect-pick-side{flex:none; text-align:right; font-family:'IBM Plex Mono',monospace}
+.mselect-pick-n{font-size:11.5px; color:var(--mut); font-weight:700}
+.mselect-pick-ref{font-size:13px; font-weight:700}
+.mselect-pick-empty{padding:16px 13px; color:var(--mut); font-size:12.5px; text-align:center}
+.mselect-pick-more{padding:10px 13px; font-size:11.5px; color:var(--mut); border-top:1px solid var(--line)}
 #ov{position:fixed; inset:0; background:rgba(23,25,28,.5); z-index:40; display:none; overflow:auto; padding:20px 14px}
 #ov .sheet{max-width:560px; margin:0 auto; background:var(--card); border-radius:18px; padding:18px; box-shadow:var(--shadow)}
 #ov .top{display:flex; gap:16px}
@@ -296,14 +317,30 @@ footer button:disabled{opacity:.5; cursor:default}
     <div class="cmp-cols">
       <div class="cmp-col">
         <div id="cmpSearchL">
-          <div class="searchbar" style="margin-bottom:0"><input type="text" id="cmpQL" placeholder="ค้นหาสินค้าฝั่งซ้าย…" autocomplete="off"></div>
+          <div class="searchbar" style="margin-bottom:0">
+            <input type="text" id="cmpQL" placeholder="ค้นหาสินค้าฝั่งซ้าย…" autocomplete="off">
+            <!-- เลือกจากรายการ — browse picker sharing cmpPool() with the search box above; see
+                 renderCmpPickPanel()/cmpPickSorted() in the script. Reuses the c2/c3 dropdowns'
+                 open/close machinery (openMSelect/toggleMSelect/closeMSelect), hence the *Btn/
+                 *Panel/*Dd id convention those functions already expect. -->
+            <div class="mselect" id="cmpPickLDd">
+              <button type="button" class="mselect-btn" id="cmpPickLBtn" aria-haspopup="true" aria-expanded="false">เลือกจากรายการ</button>
+              <div class="mselect-panel cmp-pick-panel hidden" id="cmpPickLPanel"></div>
+            </div>
+          </div>
           <div class="cmp-results" id="cmpResL"></div>
         </div>
         <div class="hidden" id="cmpPickedL"></div>
       </div>
       <div class="cmp-col">
         <div id="cmpSearchR">
-          <div class="searchbar" style="margin-bottom:0"><input type="text" id="cmpQR" placeholder="ค้นหาสินค้าฝั่งขวา…" autocomplete="off"></div>
+          <div class="searchbar" style="margin-bottom:0">
+            <input type="text" id="cmpQR" placeholder="ค้นหาสินค้าฝั่งขวา…" autocomplete="off">
+            <div class="mselect" id="cmpPickRDd">
+              <button type="button" class="mselect-btn" id="cmpPickRBtn" aria-haspopup="true" aria-expanded="false">เลือกจากรายการ</button>
+              <div class="mselect-panel cmp-pick-panel hidden" id="cmpPickRPanel"></div>
+            </div>
+          </div>
           <div class="cmp-results" id="cmpResR"></div>
         </div>
         <div class="hidden" id="cmpPickedR"></div>
@@ -585,7 +622,7 @@ let IMG = null, imgFetchedOnce = false, imgLenWarned = false, SUMMARY_GENERATED 
 // a shared minimum-store-count filter (against each product's precomputed `ns`) that only narrows
 // what each side's OWN search offers. Entirely separate from the หมวดหมู่ store/category filter —
 // this tab must never read c1Sel/catStoreSel etc., and that filter must never read cmpMinStores.
-let cmpMinStores = 1, cmpProd = { L: null, R: null }, cmpDebL, cmpDebR;
+let cmpMinStores = 1, cmpProd = { L: null, R: null }, cmpDebL, cmpDebR, cmpPickDebL, cmpPickDebR;
 
 /**
  * Decode the ?action=summary payload. Everything here is already aggregated server-side —
@@ -1396,6 +1433,7 @@ function renderCmpControls(){
     `<button class="${cmpMinStores===n?'on':''}" data-val="${n}">${n===5?'5+':n}</button>`).join('');
   const n = cmpPool().length;
   $("cmpEligible").textContent = `มีสินค้า ${n.toLocaleString()} รายการที่อยู่ใน ≥${cmpMinStores} ร้าน`;
+  renderCmpPickButtons();
 }
 function setCmpMin(v){
   cmpMinStores = Number(v);
@@ -1404,6 +1442,11 @@ function setCmpMin(v){
   // rather than waiting on the next keystroke.
   cmpDoSearch('L', $("cmpQL").value);
   cmpDoSearch('R', $("cmpQR").value);
+  // The เลือกจากรายการ panel (if open) is browsing the exact pool that just changed underneath
+  // it — refresh its rows in place (keeping whatever the user already typed into its own narrow
+  // filter) rather than closing it.
+  if(openMSelect === 'cmpPickL') renderCmpPickList('L');
+  if(openMSelect === 'cmpPickR') renderCmpPickList('R');
 }
 function cmpResultHtml(p){
   return `<div class="cmp-result" data-bc="${esc(p.bc)}">
@@ -1435,6 +1478,99 @@ function cmpClearSide(side){
   renderCmpEmptyMsg();
   renderCmpStrip();
 }
+
+/**
+ * เลือกจากรายการ — a browse picker per side, opened next to that side's search box for when
+ * typing isn't the point (the user wants to look, not search). Shares the EXACT same pool as the
+ * search box (cmpPool()) — never a second pool — and applies a choice through cmpPick(), the same
+ * function a search-result click uses. Sorted by store count DESCENDING (the whole point of
+ * ร้านค้าอย่างน้อย is "carried in many shops"), then brand, then item; rendering is capped at
+ * CMP_PICK_CAP rows since at ร้านค้าอย่างน้อย=1 the pool is every product in the master (21k+),
+ * and putting all of that in the DOM would lock the page — the cap is never silent, see the
+ * "ไม่ได้แสดง" note in renderCmpPickList(). The narrow-filter box inside the panel does a plain
+ * substring match on brand+item+sku on purpose: this panel is for browsing, and the fuzzy scorer
+ * (doSearch()/tokenScore()) stays exclusive to the actual search box beside it.
+ *
+ * Open/close reuses the c2/c3 dropdowns' machinery (openMSelect/toggleMSelect/closeMSelect)
+ * instead of a second panel-state system, so only one panel is ever open anywhere on the page —
+ * 'which' below is 'cmpPickL' or 'cmpPickR', matching the *Btn/*Panel/*Dd id convention those
+ * functions already expect.
+ */
+const CMP_PICK_CAP = 300;
+function cmpPickSorted(){
+  return [...cmpPool()].sort((a,b) =>
+    b.ns - a.ns || a.brand.localeCompare(b.brand, 'th') || a.item.localeCompare(b.item, 'th'));
+}
+function cmpPickMatches(p, needle){
+  if(!needle) return true;
+  return (p.brand + ' ' + p.item + ' ' + p.sku).toLowerCase().normalize('NFC').includes(needle);
+}
+function cmpPickRowHtml(p){
+  return `<div class="mselect-pick-row" data-bc="${esc(p.bc)}">
+    <div class="mselect-pick-info">
+      <div class="mselect-pick-brand">${esc(p.brand)||'&nbsp;'}</div>
+      <div class="mselect-pick-item">${esc(p.item)||esc(p.bc)}</div>
+      ${p.sku ? `<div class="mselect-pick-sku">${esc(p.sku)}</div>` : ''}
+    </div>
+    <div class="mselect-pick-side">
+      <div class="mselect-pick-n">${p.ns} ร้าน</div>
+      <div class="mselect-pick-ref">${fmt(p.ref)}</div>
+    </div>
+  </div>`;
+}
+// Re-filters and re-paints just the row list + truncation note, leaving the search input itself
+// untouched — called on every (debounced) keystroke in the panel's own narrow-filter box, and by
+// setCmpMin() to refresh an already-open panel's rows without disturbing what was typed into it.
+function renderCmpPickList(side){
+  const which = side==='L' ? 'cmpPickL' : 'cmpPickR';
+  const panel = $(which + 'Panel');
+  const input = panel.querySelector('.mselect-pick-search-input');
+  const needle = (input ? input.value : '').trim().toLowerCase().normalize('NFC');
+  const all = cmpPickSorted().filter(p => cmpPickMatches(p, needle));
+  const shown = all.slice(0, CMP_PICK_CAP);
+  panel.querySelector('.mselect-pick-list').innerHTML =
+    shown.map(cmpPickRowHtml).join('') || `<div class="mselect-pick-empty">ไม่พบสินค้า</div>`;
+  const hiddenN = all.length - shown.length;
+  const moreEl = panel.querySelector('.mselect-pick-more');
+  moreEl.classList.toggle('hidden', hiddenN<=0);
+  moreEl.textContent = hiddenN>0
+    ? `แสดง ${CMP_PICK_CAP.toLocaleString()} รายการแรก — ยังมีอีก ${hiddenN.toLocaleString()} รายการที่ไม่ได้แสดง — เพิ่มร้านค้าอย่างน้อย หรือพิมพ์กรองด้านบนเพื่อจำกัดรายการ`
+    : '';
+}
+// Full (re)build of one side's panel content — always starts with an empty narrow-filter, so
+// every fresh open is a clean browse. Only called when the panel is actually being opened;
+// refreshing an already-open panel goes through renderCmpPickList() instead (see setCmpMin()).
+function renderCmpPickPanel(side){
+  const which = side==='L' ? 'cmpPickL' : 'cmpPickR';
+  $(which + 'Panel').innerHTML = `
+    <div class="mselect-pick-search"><input type="text" class="mselect-pick-search-input" placeholder="พิมพ์เพื่อกรองรายการ…" autocomplete="off"></div>
+    <div class="mselect-pick-list"></div>
+    <div class="mselect-pick-more hidden"></div>`;
+  renderCmpPickList(side);
+}
+// Disables either picker button when its pool is empty (an extreme ร้านค้าอย่างน้อย with nothing
+// qualifying) and closes it first if it happened to be the open one — same rule renderMSelect()
+// already applies to the c2/c3 buttons when their own option list disappears out from under them.
+function renderCmpPickButtons(){
+  const disabled = cmpPool().length === 0;
+  ['cmpPickL','cmpPickR'].forEach(which => {
+    $(which + 'Btn').disabled = disabled;
+    if(disabled && openMSelect === which) closeMSelect(false);
+  });
+}
+function toggleCmpPick(side){
+  const which = side==='L' ? 'cmpPickL' : 'cmpPickR';
+  toggleMSelect(which);
+  if(openMSelect === which) renderCmpPickPanel(side);
+}
+// Applies a chosen row exactly like a chosen search result (same cmpPick(), no duplicate
+// selection path), then closes the panel deliberately — focus returns to the picker button,
+// matching what Escape/a second click of the button already do (see closeMSelect()).
+function cmpPickChoose(side, bc){
+  cmpPick(side, bc);
+  closeMSelect(true);
+}
+
 /**
  * The per-store table for one picked product, built from p.obs (see decode()). A payload cached
  * from before `o` existed leaves obs empty for every product — that must show an explanatory note,
@@ -1622,6 +1758,24 @@ function initEvents(){
   $("cmpQR").addEventListener('input', e=>{ clearTimeout(cmpDebR); cmpDebR=setTimeout(()=>cmpDoSearch('R', e.target.value),120); });
   $("cmpResL").addEventListener('click', e=>{ const r=e.target.closest('.cmp-result'); if(r) cmpPick('L', r.dataset.bc); });
   $("cmpResR").addEventListener('click', e=>{ const r=e.target.closest('.cmp-result'); if(r) cmpPick('R', r.dataset.bc); });
+
+  // เลือกจากรายการ — button opens/closes its own panel (native click also fires for Enter/Space
+  // on a <button>, same as the c2/c3 dropdowns); a row click applies the pick; the narrow-filter
+  // input re-renders the row list, debounced like every other search box in this file. The panel
+  // is recreated (innerHTML) on every open, so these delegated listeners stay on the static
+  // #cmpPick*Panel containers, never on the rows/input themselves.
+  $("cmpPickLBtn").addEventListener('click', ()=>toggleCmpPick('L'));
+  $("cmpPickRBtn").addEventListener('click', ()=>toggleCmpPick('R'));
+  $("cmpPickLPanel").addEventListener('click', e=>{ const r=e.target.closest('.mselect-pick-row'); if(r) cmpPickChoose('L', r.dataset.bc); });
+  $("cmpPickRPanel").addEventListener('click', e=>{ const r=e.target.closest('.mselect-pick-row'); if(r) cmpPickChoose('R', r.dataset.bc); });
+  $("cmpPickLPanel").addEventListener('input', e=>{
+    if(!e.target.classList.contains('mselect-pick-search-input')) return;
+    clearTimeout(cmpPickDebL); cmpPickDebL=setTimeout(()=>renderCmpPickList('L'),120);
+  });
+  $("cmpPickRPanel").addEventListener('input', e=>{
+    if(!e.target.classList.contains('mselect-pick-search-input')) return;
+    clearTimeout(cmpPickDebR); cmpPickDebR=setTimeout(()=>renderCmpPickList('R'),120);
+  });
   $("cmpPickedL").addEventListener('click', e=>{
     if(e.target.closest('.cmp-clearx')){ cmpClearSide('L'); return; }
     const t=e.target.closest('.cmp-title-btn'); if(t) openDetail(t.dataset.bc);
