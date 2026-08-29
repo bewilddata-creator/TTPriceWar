@@ -449,26 +449,34 @@ async function idbSet(key, val){
 }
 
 /* ================= STATE ================= */
-let P = [], PBY_BC = new Map(), STORES = [], curTab = 'search', c1Sel = null, c2Sel = null, c3Sel = null;
+let P = [], PBY_BC = new Map(), STORES = [], curTab = 'search';
 let started = false, detailReq = 0;
-// หมวดหมู่ store filter: catChanSel is '__ALL__' | '__BLANK__' (blank-channel bucket) | a channel
-// string; catStoreSel is '__ALL__' or a Set of STORES-array indices (the same indices `o` rows use
-// as sIdx). HAS_OBS reflects whether the currently-loaded payload carries `o` at all — a payload
-// cached from before `o` existed must keep behaving exactly as today, so the filter UI stays
-// hidden until a payload with `o` has actually loaded. storesGen/catFilterStoresGen let buildCat()
-// reset the filter exactly once per fresh STORES array (decode() rebuilds STORES from scratch on
-// every boot/refresh/rebuild, and stale store indices from a previous generation must not linger).
-let catChanSel = '__ALL__', catStoreSel = '__ALL__', HAS_OBS = false, storesGen = 0, catFilterStoresGen = -1;
+// หมวดหมู่ facets — c1Sel/c2Sel/c3Sel/catChanSel/catStoreSel are all Sets, one per facet, and every
+// one of them follows the SAME rule: an EMPTY set means "no restriction at this level", never
+// "nothing selected". A mixed model (some facets all-by-default, others nothing-by-default) is
+// exactly what makes faceted filters confusing, so all five behave identically from the user's
+// point of view. catStoreSel holds STORES-array indices (the same indices `o` rows use as sIdx);
+// catChanSel holds channel strings plus the '__BLANK__' sentinel for stores with no channel set.
+// HAS_OBS reflects whether the currently-loaded payload carries `o` at all — a payload cached from
+// before `o` existed must keep behaving exactly as today, so the channel/store filter UI stays
+// hidden until a payload with `o` has actually loaded (the category facets work regardless).
+// storesGen/catFilterStoresGen let buildCat() reset the channel/store facets exactly once per fresh
+// STORES array (decode() rebuilds STORES from scratch on every boot/refresh/rebuild, and stale
+// store indices from a previous generation must not linger).
+let c1Sel = new Set(), c2Sel = new Set(), c3Sel = new Set();
+let catChanSel = new Set(), catStoreSel = new Set(), HAS_OBS = false, storesGen = 0, catFilterStoresGen = -1;
 // Sort state for the หมวดหมู่ brand table — a plain module var (not `ls`) so it need not survive
 // a reload, but it must survive re-filtering rows via the c1/c2/c3 chips within this page life.
 // Default reproduces the table's original hard-coded order (most products first).
 let catSort = { key: 'n', dir: -1 };
-// The หมวดหมู่ header label, recomputed every renderCat() — the brand modal reuses this exact
-// string so it never disagrees with what the category panel itself is showing.
+// The หมวดหมู่ header label — a multi-select-aware summary of c1Sel/c2Sel/c3Sel (e.g. "MAKEUP,
+// SKINCARE › ทั้งหมด › ไพรเมอร์", or "ทั้งหมด" when nothing is restricted), recomputed every
+// renderCat() — the brand modal reuses this exact string so it never disagrees with what the
+// category panel itself is showing.
 let catLabelCur = '';
-// The active store-filter description (e.g. "TT · 3 ร้าน"), recomputed every renderCat() alongside
-// catLabelCur — the brand modal appends this too, so it can never show all-store prices while the
-// table behind it is filtered to one channel.
+// The active channel/store-filter description (e.g. "TT, Modern Trade · 3 ร้าน"), recomputed every
+// renderCat() alongside catLabelCur — the brand modal appends this too, so it can never show
+// all-store prices while the table behind it is filtered.
 let catFilterLabelCur = '';
 // ?action=images is fetched once, lazily, after the first successful render (see start()).
 // IMG holds the last-loaded payload so it can be re-applied to P every time decode() rebuilds it
@@ -845,12 +853,36 @@ function closeOverlay(){ $("ov").style.display = 'none'; curDetailBc = null; }
 
 /* ================= CATEGORY ================= */
 function med(a){ const s=[...a].sort((x,y)=>x-y); const m=s.length>>1; return s.length%2 ? s[m] : (s[m-1]+s[m])/2 }
-function chipRow(el, list, sel, all){
-  el.innerHTML = (all?[['__ALL__','ทั้งหมด']]:[]).concat(list.map(v=>[v,v])).map(([v,lbl])=>
-    `<button class="${(sel===v)?'on':''}" data-val="${esc(v)}">${esc(lbl)}</button>`).join('');
+// Multi-select chip row, shared by all four หมวดหมู่ facets (c1/c2/c3/channel — stores get their
+// own renderer since it needs per-store labels/counts from STORES rather than `list`). Every row
+// always gets a ทั้งหมด chip that clears the whole facet; it renders "on" exactly when selSet is
+// empty. Any other chip toggles its own value in/out of selSet (see setC1/setC2/setC3/setCatChan).
+function chipRow(el, list, selSet, labelFor){
+  const allBtn = `<button class="${selSet.size===0?'on':''}" data-val="__ALL__">ทั้งหมด</button>`;
+  const rest = list.map(v =>
+    `<button class="${selSet.has(v)?'on':''}" data-val="${esc(v)}">${esc(labelFor?labelFor(v):v)}</button>`).join('');
+  el.innerHTML = allBtn + rest;
 }
 function counts(arr){ const m={}; arr.forEach(v=>{ if(v) m[v]=(m[v]||0)+1 });
   return Object.keys(m).sort((a,b)=>m[b]-m[a]); }
+// Drops any selected values no longer present in `allowed` — used whenever a facet's option list
+// narrows (the category cascade, or the store pool changing with the channel facet), so a
+// selection can never keep filtering after it has silently disappeared from its own chip row.
+function pruneSet(sel, allowed){
+  if(sel.size===0) return sel;
+  const allowedSet = allowed instanceof Set ? allowed : new Set(allowed);
+  let changed = false;
+  const kept = new Set();
+  for(const v of sel){ if(allowedSet.has(v)) kept.add(v); else changed = true; }
+  return changed ? kept : sel;
+}
+// Toggles one value in/out of a Set, returning a new Set (selection state is never mutated in
+// place, matching how catStoreSel already worked before this facet became one of five).
+function toggleInSet(sel, v){
+  const cur = new Set(sel);
+  if(cur.has(v)) cur.delete(v); else cur.add(v);
+  return cur;
+}
 
 /* ---- หมวดหมู่ store filter ----
    Channel options are derived from STORES itself (never hard-coded) so an unused channel is not
@@ -864,17 +896,17 @@ function channelOptions(){
 function chanLabel(v){ return v==='__BLANK__' ? 'ไม่ระบุช่องทาง' : v; }
 // Stores are addressed by their STORES-array index (the same index `o` rows use as sIdx) rather
 // than store_id, so selection can be compared directly against observation rows with no lookup.
-function storesForChannel(chan){
+function storesForChannel(chanSet){
   const idxs = [];
   STORES.forEach((s,i)=>{
-    if(chan==='__ALL__' || (chan==='__BLANK__' ? !s.channel : s.channel===chan)) idxs.push(i);
+    if(chanSet.size===0 || (chanSet.has('__BLANK__') && !s.channel) || (s.channel && chanSet.has(s.channel))) idxs.push(i);
   });
   return idxs;
 }
-function catFilterActive(){ return !(catChanSel==='__ALL__' && catStoreSel==='__ALL__'); }
-function selectedStoreIdxSet(){
+function catFilterActive(){ return catChanSel.size>0 || catStoreSel.size>0; }
+function selectedStoreSet(){
   const pool = storesForChannel(catChanSel);
-  return new Set(catStoreSel==='__ALL__' ? pool : pool.filter(i=>catStoreSel.has(i)));
+  return new Set(catStoreSel.size===0 ? pool : pool.filter(i=>catStoreSel.has(i)));
 }
 /**
  * Recomputes ref/lo/hi/ns/pd for one product from its raw `o` observations, restricted to the
@@ -908,82 +940,103 @@ function statFor(p, selSet){
   return computeFiltered(p, selSet);
 }
 function renderChanChips(){
-  const opts = channelOptions();
-  $("catChanChips").innerHTML = [['__ALL__','ทั้งหมด']].concat(opts.map(v=>[v, chanLabel(v)]))
-    .map(([v,lbl])=>`<button class="${catChanSel===v?'on':''}" data-val="${esc(v)}">${esc(lbl)}</button>`).join('');
+  chipRow($("catChanChips"), channelOptions(), catChanSel, chanLabel);
 }
 function renderStoreChips(){
   const pool = storesForChannel(catChanSel);
-  const btns = [`<button class="${catStoreSel==='__ALL__'?'on':''}" data-val="__ALL__">ทั้งหมด (${pool.length})</button>`]
+  const btns = [`<button class="${catStoreSel.size===0?'on':''}" data-val="__ALL__">ทั้งหมด (${pool.length})</button>`]
     .concat(pool.map(i=>{
-      const on = catStoreSel!=='__ALL__' && catStoreSel.has(i);
+      const on = catStoreSel.has(i);
       return `<button class="${on?'on':''}" data-val="${i}">${esc(STORES[i].name)}</button>`;
     }));
   $("catStoreChips").innerHTML = btns.join('');
 }
 function setCatChan(v){
-  catChanSel = v;
-  catStoreSel = '__ALL__';   // the store pool just changed; stale indices from the old channel must not linger
+  catChanSel = v==='__ALL__' ? new Set() : toggleInSet(catChanSel, v);
+  // The store pool just changed — drop any selected store no longer offered under the new channel
+  // set, rather than resetting the whole facet (same narrowing rule as c1/c2/c3).
+  catStoreSel = pruneSet(catStoreSel, storesForChannel(catChanSel));
   renderChanChips(); renderStoreChips(); renderCat();
 }
 function toggleCatStore(val){
-  if(val === '__ALL__'){ catStoreSel = '__ALL__'; }
-  else {
-    const i = Number(val);
-    const wasAll = catStoreSel === '__ALL__';
-    const cur = wasAll ? new Set([i]) : new Set(catStoreSel);
-    if(!wasAll){ if(cur.has(i)) cur.delete(i); else cur.add(i); }
-    // Emptying the selection reverts to "ทั้งหมด" rather than "nothing selected", which would
-    // zero out every stat instead of just widening the view back out.
-    catStoreSel = cur.size ? cur : '__ALL__';
-  }
+  catStoreSel = val==='__ALL__' ? new Set() : toggleInSet(catStoreSel, Number(val));
   renderStoreChips(); renderCat();
 }
+// Each level's option list narrows from its parent facet(s), never from a single drilled-down
+// path — c2's options come from every product whose c1 passes the c1 facet (so an empty c1 set
+// offers every c2), and c3's from products passing BOTH c1 and c3's own parent, c2. Selections
+// that fall out of an option list are pruned immediately after — see pruneSet() — so a chip can
+// never keep filtering after it has silently disappeared from its own row.
 function buildCat(){
   const c1s = counts(P.map(p=>p.c1));
-  if(!c1Sel || !c1s.includes(c1Sel)) c1Sel = c1s[0];
-  chipRow($("c1Chips"), c1s, c1Sel, false);
-  const c2s = counts(P.filter(p=>p.c1===c1Sel).map(p=>p.c2));
-  if(!c2Sel || !c2s.includes(c2Sel)) c2Sel = c2s[0];
-  chipRow($("c2Chips"), c2s, c2Sel, false);
-  const c3s = counts(P.filter(p=>p.c1===c1Sel && p.c2===c2Sel).map(p=>p.c3));
-  if(c3Sel!=='__ALL__' && !c3s.includes(c3Sel)) c3Sel='__ALL__';
-  chipRow($("c3Chips"), c3s, c3Sel, true);
-  // Reset the store filter exactly once per fresh STORES array (a new decode()), never on an
-  // ordinary category-chip click within the same payload — see storesGen/catFilterStoresGen.
+  c1Sel = pruneSet(c1Sel, c1s);
+  chipRow($("c1Chips"), c1s, c1Sel);
+
+  const c1Pool = P.filter(p=>c1Sel.size===0 || c1Sel.has(p.c1));
+  const c2s = counts(c1Pool.map(p=>p.c2));
+  c2Sel = pruneSet(c2Sel, c2s);
+  chipRow($("c2Chips"), c2s, c2Sel);
+
+  const c12Pool = c1Pool.filter(p=>c2Sel.size===0 || c2Sel.has(p.c2));
+  const c3s = counts(c12Pool.map(p=>p.c3));
+  c3Sel = pruneSet(c3Sel, c3s);
+  chipRow($("c3Chips"), c3s, c3Sel);
+
+  // Reset the channel/store filter exactly once per fresh STORES array (a new decode()), never on
+  // an ordinary category-chip click within the same payload — see storesGen/catFilterStoresGen.
   if(catFilterStoresGen !== storesGen){
-    catChanSel = '__ALL__'; catStoreSel = '__ALL__';
+    catChanSel = new Set(); catStoreSel = new Set();
     catFilterStoresGen = storesGen;
   }
   $("catFilterPanel").classList.toggle('hidden', !HAS_OBS);
   renderChanChips(); renderStoreChips();
   renderCat();
 }
-function setC1(v){ c1Sel=v; c2Sel=null; c3Sel='__ALL__'; buildCat(); }
-function setC2(v){ c2Sel=v; c3Sel='__ALL__'; buildCat(); }
-function setC3(v){ c3Sel=v; buildCat(); }
+function setC1(v){ c1Sel = v==='__ALL__' ? new Set() : toggleInSet(c1Sel, v); buildCat(); }
+function setC2(v){ c2Sel = v==='__ALL__' ? new Set() : toggleInSet(c2Sel, v); buildCat(); }
+function setC3(v){ c3Sel = v==='__ALL__' ? new Set() : toggleInSet(c3Sel, v); buildCat(); }
+// A product is included when ALL THREE facets allow it — an empty facet imposes no restriction —
+// so c1/c2/c3 behave as independent facets rather than a forced drill-down cascade.
 function catItems(){
-  return P.filter(p=>p.c1===c1Sel && p.c2===c2Sel && (c3Sel==='__ALL__'||p.c3===c3Sel));
+  return P.filter(p =>
+    (c1Sel.size===0 || c1Sel.has(p.c1)) &&
+    (c2Sel.size===0 || c2Sel.has(p.c2)) &&
+    (c3Sel.size===0 || c3Sel.has(p.c3))
+  );
+}
+// Summarises one multi-select facet honestly: empty ⇒ "ทั้งหมด" (well, null here — see callers),
+// a handful of selected values ⇒ comma-joined, many ⇒ "N <unit>" rather than a run-on list. Never
+// printed for an unrestricted facet, so a caller can tell "restricted, summarised" apart from
+// "unrestricted" and never show a label that implies a narrower or wider selection than applied.
+function summarizeSet(sel, unit, labelFor){
+  if(sel.size===0) return null;
+  const vals = [...sel].map(v=>labelFor?labelFor(v):v);
+  return vals.length<=3 ? vals.join(', ') : `${vals.length} ${unit}`;
 }
 function renderCat(){
   const all = catItems();
   const filterActive = catFilterActive();
-  const selSet = filterActive ? selectedStoreIdxSet() : null;
+  const selSet = filterActive ? selectedStoreSet() : null;
   // Merge each product's (precomputed or recomputed) ref/lo/hi/ns/pd on top of a shallow copy —
   // every other renderer below (stats, histogram, brand table) reads p.ref/p.lo/... unchanged,
   // so filtering plugs in here without touching the rendering logic itself. A product with no
   // price under the current filter is excluded outright, never shown as ฿0.
   const items = [];
   for(const p of all){ const st = statFor(p, selSet); if(st) items.push(Object.assign({}, p, st)); }
-  const label = c1Sel+' › '+c2Sel+(c3Sel!=='__ALL__'?' › '+c3Sel:'');
+  // Only restricted levels appear in the breadcrumb — an unrestricted level would otherwise force
+  // every label to read "... › ทั้งหมด › ทั้งหมด", which drowns out what's actually filtered.
+  const catParts = [
+    summarizeSet(c1Sel, 'หมวด'), summarizeSet(c2Sel, 'หมวดย่อย'), summarizeSet(c3Sel, 'รายการ')
+  ].filter(Boolean);
+  const label = catParts.length ? catParts.join(' › ') : 'ทั้งหมด';
   catLabelCur = label;
   $("catTitle").textContent = label;
   // Always visible, filtered or not — a filtered median that looks like the global one is the
   // one mistake this filter must never allow.
-  const chanTxt = catChanSel==='__ALL__' ? 'ทั้งหมด' : chanLabel(catChanSel);
+  const chanTxt = summarizeSet(catChanSel, 'ช่องทาง', chanLabel) || 'ทั้งหมด';
   const storeN = selSet ? selSet.size : STORES.length;
   catFilterLabelCur = `${chanTxt} · ${storeN.toLocaleString()} ร้าน`;
-  $("catFilterLabel").textContent = `หมวดหมู่ · ${catFilterLabelCur}`;
+  $("catFilterLabel").textContent = `${catLabelCur} · ${catFilterLabelCur}`;
   if(!items.length){
     const msg = filterActive ? 'สินค้า (ไม่มีราคาในร้านที่เลือก)' : 'สินค้า (ยังไม่มีราคา)';
     $("catStats").innerHTML = `<div class="stat"><b>${all.length}</b><span>${msg}</span></div>`;
@@ -1089,7 +1142,7 @@ let bmLastFocus = null;
 // already shows 0/'—' today for a product with no price at all.
 function openBrandModal(brand){
   const filterActive = catFilterActive();
-  const selSet = filterActive ? selectedStoreIdxSet() : null;
+  const selSet = filterActive ? selectedStoreSet() : null;
   const rows = sortBrandModalRows(
     catItems().filter(p=>p.brand===brand).map(p=>{
       const st = statFor(p, selSet) || { ref:0, lo:0, hi:0, ns:0, pd:0 };
