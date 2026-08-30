@@ -1,4 +1,4 @@
-// Service worker for Price Scout. Its whole job is: the app must OPEN with no signal at all,
+// Service worker for TT Price Wars. Its whole job is: the app must OPEN with no signal at all,
 // and it must never serve a stale price silently — those two goals pull in opposite directions,
 // so every rule below exists to keep the app shell offline-safe while the API stays live.
 
@@ -6,14 +6,16 @@
 // activate() drop the old cache. It is NOT required for ordinary deploys: cacheFirst() refreshes
 // each entry in the background, so a phone serves the previous shell once and picks up the new
 // one on the load after. Bumping simply makes that switch immediate instead of one load late.
-const CACHE = 'pricescout-v1';
+const CACHE = 'pricescout-v2';
 
 // The app shell: everything needed to open the app and use the scanner with zero network.
 const PRECACHE = [
   './',
   './index.html',
+  './viewer.html',
   './core.js',
   './manifest.webmanifest',
+  './viewer.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/apple-touch-icon.png'

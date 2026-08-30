@@ -1,4 +1,4 @@
-// core.js — pure logic for Price Scout capture.
+// core.js — pure logic for TT Price Wars capture.
 // No DOM, no network, no globals. Imported by index.html and by node tests.
 
 export const ID_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";

@@ -3,7 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Price Scout — Viewer</title>
+<title>TT Price Wars — Viewer</title>
+<link rel="manifest" href="viewer.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Price Wars">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -230,7 +235,7 @@ footer button:disabled{opacity:.5; cursor:default}
 <body>
 
 <header>
-  <div class="logo">PRICE SCOUT <small>Viewer · TT Price War</small></div>
+  <div class="logo">TT PRICE WARS <small>Viewer · TT Price War</small></div>
   <nav class="tabs">
     <button id="tabSearch" class="on">ค้นหา</button>
     <button id="tabCat">หมวดหมู่</button>
@@ -1813,6 +1818,10 @@ function initEvents(){
 }
 
 initEvents();
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+}
+
 boot();
 </script>
 </body>

@@ -1,6 +1,6 @@
 {
-  "name": "Price Scout",
-  "short_name": "Price Scout",
+  "name": "TT Price Wars",
+  "short_name": "Price Wars",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

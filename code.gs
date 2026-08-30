@@ -1,5 +1,5 @@
 /**
- * PRICE SCOUT — backend v16
+ * TT PRICE WARS — backend v17
  *
  * Serves three static pages from one Sheet: index.html (phone capture), admin.html (desk
  * entry + product/store admin), viewer.html (analysis).
@@ -92,7 +92,7 @@ function maxSeq(ps) {
 
 /* ================= Sheet menu ================= */
 function onOpen() {
-  SpreadsheetApp.getUi().createMenu("Price Scout")
+  SpreadsheetApp.getUi().createMenu("TT Price Wars")
     .addItem("เรียงลำดับสินค้ากลับเป็นเดิม", "restoreProductOrder")
     .addItem("อัปเดตข้อมูลวิเคราะห์", "runBuildAnalysis")
     .addToUi();
@@ -134,7 +134,7 @@ function doGet(e) {
   if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
   if (action === "tunsong") return tunsongEndpoint(e.parameter.barcode);
   if (action === "tunsonglist") return tunsongList(e.parameter.limit);
-  return json({ ok: true, msg: "Price Scout API v16" });
+  return json({ ok: true, msg: "TT Price Wars API v17" });
 }
 
 /** Every form a barcode may appear in, since the Sheet stores them as numbers. */
