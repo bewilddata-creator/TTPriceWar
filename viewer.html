@@ -167,6 +167,11 @@ th[data-key] .sortarrow{margin-left:3px; display:inline-block}
 .mselect-pick-ref{font-size:13px; font-weight:700}
 .mselect-pick-empty{padding:16px 13px; color:var(--mut); font-size:12.5px; text-align:center}
 .mselect-pick-more{padding:10px 13px; font-size:11.5px; color:var(--mut); border-top:1px solid var(--line)}
+#dupeWarn{background:#FDF0ED; border:1px solid var(--warn); color:var(--warn);
+  border-radius:var(--r); padding:10px 12px; margin-bottom:12px; font-size:13px; line-height:1.5}
+#dupeWarn .dupe-row{margin-top:4px; color:var(--ink); font-size:12.5px}
+#dupeWarn .mono{font-family:'IBM Plex Mono',monospace}
+
 #ov{position:fixed; inset:0; background:rgba(23,25,28,.5); z-index:40; display:none; overflow:auto; padding:20px 14px}
 #ov .sheet{max-width:560px; margin:0 auto; background:var(--card); border-radius:18px; padding:18px; box-shadow:var(--shadow)}
 #ov .top{display:flex; gap:16px}
@@ -245,6 +250,7 @@ footer button:disabled{opacity:.5; cursor:default}
 </header>
 
 <main id="mainWrap">
+  <div id="dupeWarn" class="hidden"></div>
   <div class="loading-wrap" id="loading"><div class="progress-wrap">
     <div class="progress-track"><div class="progress-fill indet" id="pgFill"></div></div>
     <div class="progress-txt" id="pgTxt">0.0 MB</div>
@@ -640,6 +646,25 @@ let cmpMinStores = 1, cmpProd = { L: null, R: null }, cmpDebL, cmpDebR, cmpPickD
  * aren't in this payload either — ราคาส่ง rides along on the per-product ?action=prices response
  * (flag:'wholesale') and ทุนส่ง has its own ?action=tunsong endpoint, both fetched in openDetail().
  */
+/**
+ * Barcodes that normalise onto an existing product — the same item entered twice, usually a
+ * UPC-A alongside its zero-padded EAN-13. buildAnalysis keeps the first and skips the rest;
+ * this surfaces the pairs so someone can merge them in the Sheet rather than wondering why a
+ * product has no prices.
+ */
+function renderDupeWarning(d){
+  const el = $("dupeWarn");
+  const dupes = Array.isArray(d && d.dupes) ? d.dupes : [];
+  if(!dupes.length){ el.classList.add('hidden'); el.innerHTML = ''; return; }
+  const shown = dupes.slice(0, 8).map(pair =>
+    `<div class="dupe-row"><span class="mono">${esc(pair[1])}</span> ซ้ำกับ <span class="mono">${esc(pair[0])}</span></div>`).join('');
+  const more = dupes.length > 8 ? `<div class="dupe-row">…และอีก ${dupes.length - 8} รายการ</div>` : '';
+  el.innerHTML = `<b>พบบาร์โค้ดซ้ำ ${dupes.length} รายการ</b> — สินค้าเดียวกันถูกบันทึกสองครั้ง `
+    + `(เช่น UPC-A กับ EAN-13 ที่เติมศูนย์ข้างหน้า) ระบบใช้แถวแรกและข้ามแถวที่ซ้ำ `
+    + `กรุณารวมแถวเหล่านี้ในชีต Products${shown}${more}`;
+  el.classList.remove('hidden');
+}
+
 function decode(d){
   // s rows are [store_id, name, region, channel] — see buildAnalysis() in code.gs.
   STORES = d.s.map(r => ({ id: r[0], name: r[1], region: r[2], channel: r[3] }));
@@ -660,6 +685,7 @@ function decode(d){
     };
   });
   PBY_BC = new Map(P.map(p => [p.bc, p]));
+  renderDupeWarning(d);
   // `o: [[pIdx, sIdx, price, flagIdx], ...]` \u2014 latest normal(0)/promo(1) price per (product, store).
   // A payload cached from before `o` existed simply has no `o` array; HAS_OBS stays false and the
   // \u0E2B\u0E21\u0E27\u0E14\u0E2B\u0E21\u0E39\u0E48 filter UI (see buildCat()) stays hidden, so the page behaves exactly as it did before.

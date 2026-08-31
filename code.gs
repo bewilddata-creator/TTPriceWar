@@ -1,5 +1,10 @@
 /**
- * TT PRICE WARS — backend v17
+ * TT PRICE WARS — backend v18
+ *
+ * v18: buildAnalysis() reports barcode collisions instead of silently overwriting. Two Products
+ * rows normalising to the same key (a UPC-A and its zero-padded EAN-13, say) are the same
+ * product entered twice; the first row now wins deterministically and the pair is reported in
+ * the payload's `dupes` array and the execution log, so someone can merge them.
  *
  * Serves three static pages from one Sheet: index.html (phone capture), admin.html (desk
  * entry + product/store admin), viewer.html (analysis).
@@ -134,7 +139,7 @@ function doGet(e) {
   if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
   if (action === "tunsong") return tunsongEndpoint(e.parameter.barcode);
   if (action === "tunsonglist") return tunsongList(e.parameter.limit);
-  return json({ ok: true, msg: "TT Price Wars API v17" });
+  return json({ ok: true, msg: "TT Price Wars API v18" });
 }
 
 /** Every form a barcode may appear in, since the Sheet stores them as numbers. */
@@ -549,12 +554,22 @@ function buildAnalysis() {
   const base = [];
   const imgs = [];         // index-aligned with base[]; written to its own file
   const sizes = [];        // [size, unit] per product, appended to each row below
+  const dupes = [];        // [[keptBarcode, skippedBarcode], ...] — see the collision note below
   const pIdxByNorm = {};   // normBarcode(barcode) -> index into base[] / the final row array
   if (pLast > 1) {
     const v = ps.getRange(2, 1, pLast - 1, 12).getValues();
     v.forEach(function (r) {
       const bc = String(r[0]); if (!bc) return;
-      pIdxByNorm[normBarcode(bc)] = base.length;
+      // Two Products rows whose barcodes normalise to the same key are the SAME physical
+      // product written twice — typically a UPC-A and its zero-padded EAN-13 form, which is
+      // exactly what a mixed import produces. Only one can own the key, so all observations
+      // for both forms land on it and the other row becomes a ghost with no prices. Keep the
+      // FIRST row (deterministic, rather than whichever happened to be last) and REPORT the
+      // pair, because the fix is a human merging two rows in the Sheet and they cannot do
+      // that if nothing tells them.
+      const nb = normBarcode(bc);
+      if (pIdxByNorm[nb] !== undefined) { dupes.push([base[pIdxByNorm[nb]][0], bc]); return; }
+      pIdxByNorm[nb] = base.length;
       base.push([bc, B.idx(r[1]), r[2] || "", r[3] || "",
         C1.idx(r[6]), C2.idx(r[7]), C3.idx(r[8]), r[11] === "YES" ? 1 : 0]);
       sizes.push([r[4] === "" || r[4] == null ? "" : r[4], r[5] || ""]);
@@ -666,9 +681,13 @@ function buildAnalysis() {
     ok: true,
     generated: Utilities.formatDate(new Date(), tz, "yyyy-MM-dd HH:mm"),
     brands: B.arr, c1: C1.arr, c2: C2.arr, c3: C3.arr,
-    s: s, p: p, o: o
+    s: s, p: p, o: o, dupes: dupes
   };
 
+  if (dupes.length) {
+    Logger.log("WARNING: " + dupes.length + " barcode(s) normalise onto an existing product and "
+      + "were skipped — merge these rows in Products: " + JSON.stringify(dupes.slice(0, 20)));
+  }
   writeDriveJson(ANALYSIS_FILE, JSON.stringify(payload));
   // Index-aligned with payload.p, so the viewer needs no barcode keys to join them — position
   // is the join. Written in the same pass so the two files can never disagree.
