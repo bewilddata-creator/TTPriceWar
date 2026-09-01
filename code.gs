@@ -1,5 +1,9 @@
 /**
- * TT PRICE WARS — backend v18
+ * TT PRICE WARS — backend v19
+ *
+ * v19: "เติมรหัสร้านที่ยังว่าง" menu item. A shop typed into the Stores tab by hand gets a name
+ * but no store_id, and every endpoint requires column A — so the shop was invisible to all
+ * three apps with no error anywhere. This fills the gap without touching existing ids.
  *
  * v18: buildAnalysis() reports barcode collisions instead of silently overwriting. Two Products
  * rows normalising to the same key (a UPC-A and its zero-padded EAN-13, say) are the same
@@ -100,6 +104,7 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu("TT Price Wars")
     .addItem("เรียงลำดับสินค้ากลับเป็นเดิม", "restoreProductOrder")
     .addItem("อัปเดตข้อมูลวิเคราะห์", "runBuildAnalysis")
+    .addItem("เติมรหัสร้านที่ยังว่าง", "fillMissingStoreIds")
     .addToUi();
 }
 
@@ -111,6 +116,51 @@ function runBuildAnalysis() {
   Logger.log(msg);
   // getUi() throws when this is run from the editor's Run button rather than the Sheet menu —
   // and the editor is where people look for it. Log either way, alert only when there is a UI.
+  try { SpreadsheetApp.getUi().alert(msg); } catch (err) {}
+}
+
+/**
+ * Stamps a store_id on any Stores row that has a NAME but no id.
+ *
+ * A shop added by hand in the Sheet naturally gets a name typed into column B and nothing in
+ * column A — but every endpoint requires column A, because an observation references a shop by
+ * its id and a row with no id can never be pointed at. Such a row is skipped silently
+ * everywhere, so the shop simply does not exist as far as the apps are concerned. This makes
+ * adding one by hand safe: run it and the missing ids are filled in.
+ *
+ * Never touches a row that already has an id — repointing an existing shop would orphan every
+ * observation already written against it.
+ */
+function fillMissingStoreIds() {
+  const st = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Stores");
+  const last = st.getLastRow();
+  if (last < 2) { toastOrLog("ยังไม่มีร้านในชีต"); return; }
+
+  const rows = st.getRange(2, 1, last - 1, 2).getValues();
+  const taken = {};
+  rows.forEach(function (r) { const id = String(r[0] || "").trim(); if (id) taken[id] = true; });
+
+  const out = [];
+  let filled = 0;
+  rows.forEach(function (r) {
+    const id = String(r[0] || "").trim(), nm = String(r[1] || "").trim();
+    if (id || !nm) { out.push([r[0]]); return; }   // already has one, or is a blank row
+    let fresh = genStoreId();
+    while (taken[fresh]) fresh = genStoreId();
+    taken[fresh] = true;
+    out.push([fresh]);
+    filled++;
+  });
+
+  if (filled) st.getRange(2, 1, out.length, 1).setValues(out);
+  toastOrLog(filled
+    ? "เติมรหัสร้านแล้ว " + filled + " ร้าน — อย่าลืมกด \"อัปเดตข้อมูลวิเคราะห์\" เพื่อให้หน้าวิเคราะห์เห็นร้านใหม่"
+    : "ทุกร้านมีรหัสอยู่แล้ว");
+}
+
+/** alert() when there is a UI (Sheet menu), Logger otherwise (editor Run button). */
+function toastOrLog(msg) {
+  Logger.log(msg);
   try { SpreadsheetApp.getUi().alert(msg); } catch (err) {}
 }
 
@@ -139,7 +189,7 @@ function doGet(e) {
   if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
   if (action === "tunsong") return tunsongEndpoint(e.parameter.barcode);
   if (action === "tunsonglist") return tunsongList(e.parameter.limit);
-  return json({ ok: true, msg: "TT Price Wars API v18" });
+  return json({ ok: true, msg: "TT Price Wars API v19" });
 }
 
 /** Every form a barcode may appear in, since the Sheet stores them as numbers. */
