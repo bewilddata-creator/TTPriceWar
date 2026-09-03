@@ -1,5 +1,15 @@
 /**
- * TT PRICE WARS — backend v20
+ * TT PRICE WARS — backend v21
+ *
+ * v21: `POST {type:"bulkSachet"}` — the grid-review bulk tagger for column P. Someone is about
+ * to tag ~15,000 products; doing that through updateProduct() (a TextFinder lookup plus a
+ * setValue PER product, ~0.3s each) would put 400 products at roughly two minutes, closing in on
+ * doPost's 6-minute ceiling as the batch grows. bulkSachet() instead reads column A and column P
+ * ONCE each, resolves every barcode to a row in memory, and writes column P back with a single
+ * setValues() — Sheets calls stay a small constant no matter how many barcodes are sent.
+ * onlyBlank (default true) keeps it from ever silently overwriting a decision someone already
+ * made one at a time; it is forced off for the value:"" undo case, which must be able to clear
+ * whatever it just set.
  *
  * v20: Products gained column P, isSachet — "YES" | "NO" | "" (blank means NOT YET REVIEWED,
  * never treat it as NO). New `action=sachetqueue` serves the tagging UI's work queue: products
@@ -198,7 +208,7 @@ function doGet(e) {
   if (action === "tunsong") return tunsongEndpoint(e.parameter.barcode);
   if (action === "tunsonglist") return tunsongList(e.parameter.limit);
   if (action === "sachetqueue") return sachetQueue(e.parameter.limit, e.parameter.c1);
-  return json({ ok: true, msg: "TT Price Wars API v20" });
+  return json({ ok: true, msg: "TT Price Wars API v21" });
 }
 
 /** Every form a barcode may appear in, since the Sheet stores them as numbers. */
@@ -1050,6 +1060,7 @@ function writeOne(ss, d, ctx) {
   }
 
   if (d.type === "updateProduct") return updateProduct(ss, d);
+  if (d.type === "bulkSachet") return bulkSachet(ss, d);
   if (d.type === "updateStore") return updateStore(ss, d);
   if (d.type === "createStore") return createStore(ss, d, ctx);
   if (d.type === "uploadImage") return uploadImage(ss, d);
@@ -1096,6 +1107,91 @@ function updateProduct(ss, d) {
   // "vocab" or a brand/category the admin just introduced is missing from their own dropdown.
   CacheService.getScriptCache().removeAll(["lk:" + normBarcode(d.barcode), "vocab"]);
   return { id: d.barcode, status: "updated" };
+}
+
+/**
+ * Bulk-writes column P (isSachet) for many products in one call — the grid-review tagger's
+ * "apply to everything still selected" action. See the v21 header note for why this cannot
+ * reuse updateProduct(): that function costs a TextFinder scan plus a setValue PER product,
+ * which is fine for one row and much too slow for hundreds. This reads column A and column P
+ * ONCE each, resolves every barcode to a row index in memory, and writes column P back with a
+ * single setValues() — the Sheets call count stays constant regardless of how many barcodes
+ * are sent.
+ *
+ * value must be exactly "YES", "NO" or "" (the undo case, reverting rows to unreviewed);
+ * anything else is refused before any read happens. onlyBlank (default true) skips a row
+ * already marked "YES" or "NO" so a bulk action can never silently clobber a decision made one
+ * at a time — except when value is "", where undo must be able to clear what it just set, so
+ * onlyBlank is forced off.
+ */
+function bulkSachet(ss, d) {
+  const value = d.value;
+  if (value !== "YES" && value !== "NO" && value !== "") {
+    return { id: "bulkSachet", status: "invalid" };
+  }
+
+  const barcodes = Array.isArray(d.barcodes) ? d.barcodes : [];
+  const onlyBlank = (value === "") ? false : (d.onlyBlank == null ? true : !!d.onlyBlank);
+
+  const ps = ss.getSheetByName("Products");
+  const last = ps.getLastRow();
+  if (last < 2 || !barcodes.length) {
+    return { id: "bulkSachet", status: "ok", updated: 0, skipped: 0, notFound: barcodes.length };
+  }
+  const n = last - 1;
+
+  // Two bulk reads, nothing else — matches the pattern the rest of the file uses to avoid
+  // getRange inside a loop (see sachetQueue/needsInfo). col is mutated in memory and written
+  // back exactly once, below.
+  const codes = ps.getRange(2, 1, n, 1).getValues();           // A
+  const col = ps.getRange(2, SACHET_COL, n, 1).getValues()     // P
+    .map(function (r) { return r[0]; });
+
+  // normBarcode(barcode) -> row index (0-based, aligned with codes/col). A collision (two
+  // Products rows normalising to the same key) keeps the FIRST row, same as buildAnalysis()'s
+  // dupe handling — a bulk write should never pick a different winner than the rest of the
+  // system does.
+  const rowByNorm = {};
+  for (let i = 0; i < n; i++) {
+    const bc = codes[i][0];
+    if (bc === "" || bc == null) continue;
+    const key = normBarcode(bc);
+    if (!(key in rowByNorm)) rowByNorm[key] = i;
+  }
+
+  let updated = 0, skipped = 0, notFound = 0;
+  const touchedKeys = [];
+  const seen = {};   // caller-supplied duplicate barcodes count once, not once per occurrence
+  barcodes.forEach(function (bc) {
+    const key = normBarcode(bc);
+    if (seen[key]) return;
+    seen[key] = true;
+    const i = rowByNorm[key];
+    if (i === undefined) { notFound++; return; }
+    const existing = String(col[i] || "");
+    if (onlyBlank && (existing === "YES" || existing === "NO")) { skipped++; return; }
+    if (existing === value) { skipped++; return; }   // already the target value — no write needed
+    col[i] = value;
+    touchedKeys.push(key);
+    updated++;
+  });
+
+  // Nothing changed: skip the write (and the cache churn) rather than rewriting 15,000 cells
+  // with the values they already had.
+  if (updated > 0) {
+    ps.getRange(2, SACHET_COL, n, 1).setValues(col.map(function (v) { return [v]; }));
+    // One removeAll for every barcode actually updated — lookup() would otherwise keep serving
+    // the pre-edit product for up to 6 hours. "vocab" is untouched: packaging is not part of
+    // the brand/category vocabulary it caches.
+    // Chunked: a category-wide bulk can touch thousands of rows, and handing CacheService one
+    // enormous key array is asking for a limit nobody documents. 200 at a time is plenty.
+    const cache = CacheService.getScriptCache();
+    for (let i = 0; i < touchedKeys.length; i += 200) {
+      cache.removeAll(touchedKeys.slice(i, i + 200).map(function (k) { return "lk:" + k; }));
+    }
+  }
+
+  return { id: "bulkSachet", status: "ok", updated: updated, skipped: skipped, notFound: notFound };
 }
 
 /**
