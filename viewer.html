@@ -194,6 +194,9 @@ th[data-key] .sortarrow{margin-left:3px; display:inline-block}
 .flagpill{display:inline-block; font-size:10.5px; font-weight:800; padding:2px 8px; border-radius:99px; margin-left:6px}
 .flagpill.promo{background:var(--amber-bg); color:var(--amber)}
 .flagpill.exp{background:#FBEFE9; color:var(--warn)}
+/* ---- เทียบสินค้า packaging badge — sachet vs not-a-sachet, next to size/unit. Neutral (not
+   promo/warn-colored) since it's identity, not an alert. ---- */
+.flagpill.sachet{background:var(--paper); color:var(--mut); border:1px solid var(--line)}
 .close-x{margin-left:auto; font-size:22px; color:var(--mut); padding:4px 8px}
 /* ---- หมวดหมู่ brand modal: lists one brand's products within the active category filter ---- */
 #bmOv{position:fixed; inset:0; background:rgba(23,25,28,.5); z-index:39; display:none; overflow:auto; padding:20px 14px}
@@ -278,6 +281,11 @@ footer button:disabled{opacity:.5; cursor:default}
         <div class="mselect-panel hidden" id="c3Panel"></div>
       </div>
     </div>
+    <!-- บรรจุภัณฑ์ (sachet) — a peer facet like c1: joins catItems()'s predicate directly (see
+         catItems()/renderSachetChips()), unlike ร้านค้าที่ใช้วิเคราะห์ below which only reshapes
+         computed stats via statFor() rather than which products are counted at all. ยังไม่ระบุ
+         (sachet===0) only appears when the loaded payload actually has an unreviewed product. -->
+    <div class="chips" id="catSachetChips"></div>
     <!-- ร้านค้าที่ใช้วิเคราะห์ — hidden entirely until a payload carrying `o` (price observations)
          has loaded, so a stale pre-`o` cache never offers a filter it cannot actually compute. -->
     <div class="panel hidden" id="catFilterPanel">
@@ -610,19 +618,20 @@ async function idbSet(key, val){
 /* ================= STATE ================= */
 let P = [], PBY_BC = new Map(), STORES = [], curTab = 'search';
 let started = false, detailReq = 0;
-// หมวดหมู่ facets — c1Sel/c2Sel/c3Sel/catChanSel/catStoreSel are all Sets, one per facet, and every
-// one of them follows the SAME rule: an EMPTY set means "no restriction at this level", never
-// "nothing selected". A mixed model (some facets all-by-default, others nothing-by-default) is
-// exactly what makes faceted filters confusing, so all five behave identically from the user's
-// point of view. catStoreSel holds STORES-array indices (the same indices `o` rows use as sIdx);
-// catChanSel holds channel strings plus the '__BLANK__' sentinel for stores with no channel set.
+// หมวดหมู่ facets — c1Sel/c2Sel/c3Sel/catSachetSel/catChanSel/catStoreSel are all Sets, one per
+// facet, and every one of them follows the SAME rule: an EMPTY set means "no restriction at this
+// level", never "nothing selected". A mixed model (some facets all-by-default, others
+// nothing-by-default) is exactly what makes faceted filters confusing, so all six behave
+// identically from the user's point of view. catStoreSel holds STORES-array indices (the same
+// indices `o` rows use as sIdx); catChanSel holds channel strings plus the '__BLANK__' sentinel
+// for stores with no channel set; catSachetSel holds sachet numbers (0/1/2, see decode()).
 // HAS_OBS reflects whether the currently-loaded payload carries `o` at all — a payload cached from
 // before `o` existed must keep behaving exactly as today, so the channel/store filter UI stays
 // hidden until a payload with `o` has actually loaded (the category facets work regardless).
 // storesGen/catFilterStoresGen let buildCat() reset the channel/store facets exactly once per fresh
 // STORES array (decode() rebuilds STORES from scratch on every boot/refresh/rebuild, and stale
 // store indices from a previous generation must not linger).
-let c1Sel = new Set(), c2Sel = new Set(), c3Sel = new Set();
+let c1Sel = new Set(), c2Sel = new Set(), c3Sel = new Set(), catSachetSel = new Set();
 let catChanSel = new Set(), catStoreSel = new Set(), HAS_OBS = false, storesGen = 0, catFilterStoresGen = -1;
 // Which of the c2/c3 dropdown panels (see renderMSelect()) is currently open — 'c2', 'c3', or null.
 // Only one may be open at a time; buildCat() re-renders both panels' contents on every facet
@@ -653,10 +662,11 @@ let cmpMinStores = 1, cmpProd = { L: null, R: null }, cmpDebL, cmpDebR, cmpPickD
 
 /**
  * Decode the ?action=summary payload. Everything here is already aggregated server-side —
- * ref/lo/hi/ns/pd per product, plus size/unit appended as indices 13-14 — so unlike the old
- * decode there is no per-observation loop over a raw price log, and the detail sheet no longer
- * needs a ?action=lookup round trip for size/unit. A cached payload from before size/unit
- * existed simply destructures those two as undefined, defaulted to '' below so nothing renders
+ * ref/lo/hi/ns/pd per product, plus size/unit appended as indices 13-14 and sachet as index 15
+ * (0=unknown/not yet reviewed, 1=ซอง, 2=ไม่ใช่ซอง) — so unlike the old decode there is no
+ * per-observation loop over a raw price log, and the detail sheet no longer needs a
+ * ?action=lookup round trip for size/unit. A cached payload from before size/unit/sachet
+ * existed simply destructures those as undefined, defaulted to ''/0 below so nothing renders
  * "undefined". No image URL exists in this payload; the image comes from the separate
  * ?action=images payload (see applyImagesToP()). ราคาส่ง (wholesale) and ทุนส่ง (what a shop paid)
  * aren't in this payload either — ราคาส่ง rides along on the per-product ?action=prices response
@@ -685,7 +695,9 @@ function decode(d){
   // s rows are [store_id, name, region, channel] — see buildAnalysis() in code.gs.
   STORES = d.s.map(r => ({ id: r[0], name: r[1], region: r[2], channel: r[3] }));
   P = d.p.map(r => {
-    const [bc, brandIdx, item, sku, c1Idx, c2Idx, c3Idx, needsInfo01, ref, lo, hi, ns, pd, size, unit] = r;
+    // sachet (index 15) is appended after unit; a payload cached before it existed simply has
+    // r[15] undefined, which must read as 0 (unknown/not yet reviewed) — see decode()'s doc comment.
+    const [bc, brandIdx, item, sku, c1Idx, c2Idx, c3Idx, needsInfo01, ref, lo, hi, ns, pd, size, unit, sachet] = r;
     const brand = d.brands[brandIdx] || '';
     const c1 = d.c1[c1Idx] || '', c2 = d.c2[c2Idx] || '', c3 = d.c3[c3Idx] || '';
     const item2 = item || '', sku2 = sku || '';
@@ -693,7 +705,7 @@ function decode(d){
       bc: String(bc), brand, item: item2, sku: sku2, c1, c2, c3,
       needs: needsInfo01 === 1,
       ref: ref || 0, lo: lo || 0, hi: hi || 0, ns: ns || 0, pd: pd || 0,
-      size: size || '', unit: unit || '',
+      size: size || '', unit: unit || '', sachet: sachet || 0,
       img: '',   // filled in by applyImagesToP() once ?action=images has loaded, if ever
       obs: [],   // per-store price observations for the \u0E2B\u0E21\u0E27\u0E14\u0E2B\u0E21\u0E39\u0E48 store filter \u2014 filled in below
       words: (brand + ' ' + item2 + ' ' + sku2 + ' ' + c3).toLowerCase().normalize('NFC')
@@ -1046,6 +1058,11 @@ function closeOverlay(){ $("ov").style.display = 'none'; curDetailBc = null; }
 
 /* ================= CATEGORY ================= */
 function med(a){ const s=[...a].sort((x,y)=>x-y); const m=s.length>>1; return s.length%2 ? s[m] : (s[m-1]+s[m])/2 }
+// sachet (see decode()): a single-use foil packet competes on price with entirely different
+// products than a full-size jar, so mixing them into one median describes nothing real — this is
+// why it gets its own หมวดหมู่ facet (below) and its own badge on the เทียบสินค้า tab.
+const SACHET_LABEL = { 1:'ซอง', 2:'ไม่ใช่ซอง', 0:'ยังไม่ระบุ' };
+function sachetLabel(v){ return SACHET_LABEL[v] || ''; }
 // Multi-select chip row, shared by the c1 and channel หมวดหมู่ facets (c2/c3 use the dropdown
 // panels below instead — see renderMSelect() — since real category data wraps a chip row over
 // many lines; stores get their own renderer since it needs per-store labels/counts from STORES
@@ -1162,6 +1179,30 @@ function toggleCatStore(val){
   catStoreSel = val==='__ALL__' ? new Set() : toggleInSet(catStoreSel, Number(val));
   renderStoreChips(); renderCat();
 }
+/* ---- หมวดหมู่ packaging (sachet) filter ----
+   `pool` is the category-filtered set (c1/c2/c3 applied, sachet not yet applied — see buildCat()),
+   so counts stay live as the category facets narrow, same as c2/c3's own option counts. ซอง and
+   ไม่ใช่ซอง are always offered; ยังไม่ระบุ (sachet===0) is offered only when the loaded payload
+   has an unreviewed product ANYWHERE (checked against the full P, not just `pool`) — the same
+   "only offer what exists" rule channelOptions() applies, but checked globally so the chip does
+   not flicker in and out as an unrelated category filter is toggled. */
+function sachetOptionsFrom(pool){
+  const n = { 0:0, 1:0, 2:0 };
+  pool.forEach(p => { n[p.sachet] = (n[p.sachet]||0) + 1; });
+  const hasUnknown = P.some(p => p.sachet === 0);
+  const order = hasUnknown ? [1,2,0] : [1,2];
+  return order.map(v => [v, n[v]||0]);
+}
+function renderSachetChips(pairs){
+  const allBtn = `<button class="${catSachetSel.size===0?'on':''}" data-val="__ALL__">ทั้งหมด</button>`;
+  const rest = pairs.map(([v,n]) =>
+    `<button class="${catSachetSel.has(v)?'on':''}" data-val="${esc(v)}">${esc(sachetLabel(v))} (${n.toLocaleString()})</button>`).join('');
+  $("catSachetChips").innerHTML = allBtn + rest;
+}
+function setCatSachet(v){
+  catSachetSel = v==='__ALL__' ? new Set() : toggleInSet(catSachetSel, Number(v));
+  buildCat();
+}
 // Each level's option list narrows from its parent facet(s), never from a single drilled-down
 // path — c2's options come from every product whose c1 passes the c1 facet (so an empty c1 set
 // offers every c2), and c3's from products passing BOTH c1 and c3's own parent, c2. Selections
@@ -1181,6 +1222,13 @@ function buildCat(){
   const c3pairs = countsN(c12Pool.map(p=>p.c3));
   c3Sel = pruneSet(c3Sel, c3pairs.map(x=>x[0]));
   renderMSelect('c3', c3pairs, c3Sel, 'รายการ');
+
+  // Packaging (sachet) — a peer facet, not a cascade level: its pool is c1/c2/c3 all applied,
+  // sachet itself excluded (see sachetOptionsFrom()'s doc comment).
+  const c123Pool = c12Pool.filter(p=>c3Sel.size===0 || c3Sel.has(p.c3));
+  const sachetPairs = sachetOptionsFrom(c123Pool);
+  catSachetSel = pruneSet(catSachetSel, sachetPairs.map(x=>x[0]));
+  renderSachetChips(sachetPairs);
 
   // Reset the channel/store filter exactly once per fresh STORES array (a new decode()), never on
   // an ordinary category-chip click within the same payload — see storesGen/catFilterStoresGen.
@@ -1242,13 +1290,14 @@ function toggleMSelect(which){
   $(which + 'Panel').classList.remove('hidden');
   $(which + 'Btn').setAttribute('aria-expanded', 'true');
 }
-// A product is included when ALL THREE facets allow it — an empty facet imposes no restriction —
-// so c1/c2/c3 behave as independent facets rather than a forced drill-down cascade.
+// A product is included when ALL FOUR facets allow it — an empty facet imposes no restriction —
+// so c1/c2/c3/sachet behave as independent facets rather than a forced drill-down cascade.
 function catItems(){
   return P.filter(p =>
     (c1Sel.size===0 || c1Sel.has(p.c1)) &&
     (c2Sel.size===0 || c2Sel.has(p.c2)) &&
-    (c3Sel.size===0 || c3Sel.has(p.c3))
+    (c3Sel.size===0 || c3Sel.has(p.c3)) &&
+    (catSachetSel.size===0 || catSachetSel.has(p.sachet))
   );
 }
 // Summarises one multi-select facet honestly: empty ⇒ "ทั้งหมด" (well, null here — see callers),
@@ -1273,7 +1322,8 @@ function renderCat(){
   // Only restricted levels appear in the breadcrumb — an unrestricted level would otherwise force
   // every label to read "... › ทั้งหมด › ทั้งหมด", which drowns out what's actually filtered.
   const catParts = [
-    summarizeSet(c1Sel, 'หมวด'), summarizeSet(c2Sel, 'หมวดย่อย'), summarizeSet(c3Sel, 'รายการ')
+    summarizeSet(c1Sel, 'หมวด'), summarizeSet(c2Sel, 'หมวดย่อย'), summarizeSet(c3Sel, 'รายการ'),
+    summarizeSet(catSachetSel, 'บรรจุภัณฑ์', sachetLabel)
   ].filter(Boolean);
   const label = catParts.length ? catParts.join(' › ') : 'ทั้งหมด';
   catLabelCur = label;
@@ -1635,6 +1685,16 @@ function cmpStoreRows(p){
   return `<table style="margin-top:10px"><thead><tr><th>ร้าน</th><th>ช่องทาง</th><th class="num">ราคา</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
 }
+/**
+ * เทียบสินค้า packaging badge — whether a picked product is a sachet is the single most important
+ * thing to notice when comparing two products (see SACHET_LABEL's doc comment): without it, a
+ * price gap against a full-size product would read as a bargain when it is really a different kind
+ * of product entirely. Nothing renders for sachet===0 (unknown/not yet reviewed) — a badge here
+ * must never assert a packaging type the data doesn't actually confirm.
+ */
+function sachetBadge(p){
+  return p.sachet ? `<span class="flagpill sachet">${esc(sachetLabel(p.sachet))}</span>` : '';
+}
 function renderCmpSide(side){
   const searchWrap = $(side==='L' ? 'cmpSearchL' : 'cmpSearchR');
   const picked = $(side==='L' ? 'cmpPickedL' : 'cmpPickedR');
@@ -1660,7 +1720,7 @@ function renderCmpSide(side){
       <div style="flex:1; min-width:0">
         <div class="brand">${esc(p.brand)||'&nbsp;'}</div>
         <button type="button" class="cmp-title-btn" data-bc="${esc(p.bc)}">${esc(p.item)||esc(p.bc)}</button>
-        <div class="sku">${[esc(p.sku), esc(sizeUnit)].filter(Boolean).join(' · ')}</div>
+        <div class="sku">${[esc(p.sku), esc(sizeUnit)].filter(Boolean).join(' · ')}${sachetBadge(p)}</div>
         <div class="bc">${esc(p.bc)}</div>
         <div class="meta-line" style="margin:4px 2px 0">${esc(catPath)}</div>
       </div>
@@ -1789,6 +1849,7 @@ function initEvents(){
   document.addEventListener('click', e=>{
     if(openMSelect && !e.target.closest('#' + openMSelect + 'Dd')) closeMSelect(false);
   });
+  $("catSachetChips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setCatSachet(b.dataset.val); });
   $("catChanChips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setCatChan(b.dataset.val); });
   $("catStoreChips").addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) toggleCatStore(b.dataset.val); });
   $("catBrandRows").addEventListener('click', e=>{ const r=e.target.closest('tr[data-brand]'); if(r) openBrandModal(r.dataset.brand); });
