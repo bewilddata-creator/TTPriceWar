@@ -430,7 +430,7 @@ import { makeId, normBarcode, priceKey, priceValue, buildObs, shouldAcceptScan, 
 /* ================= CONFIG ================= */
 const API_URL = "https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q-A3R6Fp45V42sBslG1AhZfQ_S3RyQGOg1Zp5toMgQtyaGg/exec";
 const DEVICE = "Ooa";        // who holds this phone; becomes entered_by
-const NET_TIMEOUT = 12000;
+const NET_TIMEOUT = 30000;
 
 /* ================= STATE ================= */
 const S = { store:null, storeId:null, newStore:null, stores:[], recent:[],
@@ -453,17 +453,33 @@ const ls = {
  * version had exactly that failure — an unresolved promise left the page on a loading
  * message with no error and no way forward.
  */
+/**
+ * Every network call goes through here, with a timeout and one retry.
+ *
+ * Apps Script latency swings hard: the same endpoint measured 2.1s and 9.6s minutes apart, and
+ * cold starts get slower as the Sheet grows. A 12s ceiling was close enough to that spread to
+ * abort calls that would have succeeded, and report "failed to load" for something the server
+ * answered fine. GETs are retried ONCE — a cold start usually only bites the first attempt.
+ *
+ * POSTs are never retried here: the outbox owns that, and it tracks obs_id so the backend can
+ * recognise a repeat. Retrying a write from two places would be two mechanisms guessing.
+ */
 async function api(path, opts = {}, timeout = NET_TIMEOUT) {
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeout);
-  try {
-    const res = await fetch(API_URL + path, { ...opts, signal: ctl.signal });
-    return await res.json();
-  } catch (e) {
-    return { ok: false, offline: true };
-  } finally {
-    clearTimeout(timer);
+  const isGet = !opts.method || String(opts.method).toUpperCase() === 'GET';
+  for (let attempt = 0; attempt < (isGet ? 2 : 1); attempt++) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeout);
+    try {
+      const res = await fetch(API_URL + path, { ...opts, signal: ctl.signal });
+      return await res.json();
+    } catch (e) {
+      if (attempt === 0 && isGet) continue;   // one more go before calling it a failure
+      return { ok: false, offline: true };
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  return { ok: false, offline: true };
 }
 
 function setStatus(msg, spinning, isErr){
