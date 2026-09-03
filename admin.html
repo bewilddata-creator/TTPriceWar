@@ -275,6 +275,28 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
   gap:10px; align-items:center}
 .pk-empty-err{color:var(--warn); font-weight:600}
 
+/* ---- ประเภทบรรจุภัณฑ์ (bulk-by-category mode: เลือกทีละหมวด) ---- */
+.pkb-filters{display:flex; gap:16px; align-items:flex-end; flex-wrap:wrap; margin-top:14px}
+.pkb-toolbar{display:flex; gap:14px; align-items:center; margin:12px 0}
+.pkb-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px;
+  max-height:calc(100dvh - 460px); min-height:160px; overflow-y:auto; padding:2px}
+.pkb-card{display:flex; flex-direction:column; gap:4px; padding:8px; border:1.5px solid var(--line);
+  border-radius:10px; background:var(--card); text-align:left; cursor:pointer}
+.pkb-card.on{border-color:var(--ok); background:var(--ok-bg)}
+.pkb-thumb{width:100%; height:90px; object-fit:contain; border-radius:6px; background:var(--paper)}
+.pkb-thumb-ph{width:100%; height:90px; border-radius:6px; background:var(--paper); border:1px dashed var(--line);
+  display:flex; align-items:center; justify-content:center; color:var(--mut); font-size:11px; font-weight:600}
+.pkb-brand{font-size:10px; font-weight:700; color:var(--mut); text-transform:uppercase; letter-spacing:.3px}
+.pkb-item{font-size:12.5px; font-weight:700; line-height:1.3;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+.pkb-sku{font-size:11px; color:var(--mut)}
+.pkb-size{font-family:'IBM Plex Mono',monospace; font-size:12px; font-weight:700; color:var(--tag-deep)}
+.pkb-hint{font-size:10.5px; font-weight:600; color:var(--amber); font-style:italic}
+.pkb-applybar{display:flex; gap:10px; flex-wrap:wrap; margin-top:14px}
+.pkb-applybar .pk-btn:disabled{opacity:.4; cursor:default}
+.pkb-result{margin-top:14px; padding:12px 14px; border-radius:10px; background:var(--paper);
+  border:1px solid var(--line); font-size:13px; display:flex; flex-direction:column; gap:8px}
+
 @media (max-width:900px){
   .rv-layout{grid-template-columns:1fr}
   .ts-layout{grid-template-columns:1fr}
@@ -528,23 +550,70 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
   <section id="sachetScreen" class="card hidden">
     <div class="pk-head">
       <div class="eyebrow" style="margin:0">ประเภทบรรจุภัณฑ์ — ซองหรือไม่ใช่ซอง</div>
-      <div class="field" style="min-width:200px">
-        <label class="eyebrow" for="pkCategorySelect" style="margin:0">หมวดหมู่</label>
-        <select class="tin" id="pkCategorySelect"><option value="">ทุกหมวดหมู่</option></select>
+      <!-- ทีละชิ้น (existing keyboard-first flow) stays the default; เลือกทีละหมวด is opt-in.
+           Switching here only toggles which view is visible — neither view's state is reset,
+           so pending single-item decisions and an in-progress bulk selection both survive a swap. -->
+      <div class="segmented" id="pkModeSwitch">
+        <button type="button" class="on" id="pkModeSingleBtn">ทีละชิ้น</button>
+        <button type="button" id="pkModeBulkBtn">เลือกทีละหมวด</button>
       </div>
     </div>
-    <div class="pk-progress">
-      <span id="pkRemaining">เหลือ 0 รายการ</span>
-      <span id="pkTagged">แท็กแล้ว 0 รายการ (เซสชันนี้)</span>
-      <span id="pkPending" class="pk-pending hidden">รอบันทึก 0</span>
+
+    <div id="pkSingleView">
+      <div class="pk-head">
+        <div class="field" style="min-width:200px">
+          <label class="eyebrow" for="pkCategorySelect" style="margin:0">หมวดหมู่</label>
+          <select class="tin" id="pkCategorySelect"><option value="">ทุกหมวดหมู่</option></select>
+        </div>
+      </div>
+      <div class="pk-progress">
+        <span id="pkRemaining">เหลือ 0 รายการ</span>
+        <span id="pkTagged">แท็กแล้ว 0 รายการ (เซสชันนี้)</span>
+        <span id="pkPending" class="pk-pending hidden">รอบันทึก 0</span>
+      </div>
+      <!-- Static, always on screen regardless of loading/empty/error state — the whole interface
+           is the keyboard, so the legend can never be something the user has to go find. -->
+      <div class="pk-legend">
+        <b>1</b> ซอง &nbsp;·&nbsp; <b>2</b> ไม่ใช่ซอง &nbsp;·&nbsp; <b>3</b> หรือ <b>S</b> ข้าม (ไม่บันทึก)
+        &nbsp;·&nbsp; <b>←</b> หรือ <b>Backspace</b> ย้อนกลับเพื่อแก้คำตอบก่อนหน้า
+      </div>
+      <div class="pk-stage" id="pkStage"></div>
     </div>
-    <!-- Static, always on screen regardless of loading/empty/error state — the whole interface
-         is the keyboard, so the legend can never be something the user has to go find. -->
-    <div class="pk-legend">
-      <b>1</b> ซอง &nbsp;·&nbsp; <b>2</b> ไม่ใช่ซอง &nbsp;·&nbsp; <b>3</b> หรือ <b>S</b> ข้าม (ไม่บันทึก)
-      &nbsp;·&nbsp; <b>←</b> หรือ <b>Backspace</b> ย้อนกลับเพื่อแก้คำตอบก่อนหน้า
+
+    <!-- เลือกทีละหมวด: knock out a whole subcategory in one confirmed write, hand-review the
+         remainder in ทีละชิ้น. c1/c2/c3 are a narrowing drill-down (one rule, one category) —
+         deliberately not the multi-select facets the viewer uses. -->
+    <div id="pkBulkView" class="hidden">
+      <div class="pkb-filters">
+        <div class="field">
+          <label class="eyebrow" for="pkbC1" style="margin:0">หมวดหมู่ 1</label>
+          <select class="tin" id="pkbC1"><option value="">ทุกหมวดหมู่</option></select>
+        </div>
+        <div class="field">
+          <label class="eyebrow" for="pkbC2" style="margin:0">หมวดหมู่ 2</label>
+          <select class="tin" id="pkbC2"><option value="">ทุกหมวดหมู่ย่อย</option></select>
+        </div>
+        <div class="field">
+          <label class="eyebrow" for="pkbC3" style="margin:0">หมวดหมู่ 3</label>
+          <select class="tin" id="pkbC3"><option value="">ทั้งหมด</option></select>
+        </div>
+        <button type="button" class="linkbtn" id="pkbReloadBtn">โหลดใหม่</button>
+      </div>
+      <div class="pk-progress">
+        <span id="pkbRemaining">เหลือ 0 รายการ</span>
+        <span id="pkbCount">เลือกอยู่ 0 จาก 0</span>
+      </div>
+      <div class="pkb-toolbar">
+        <button type="button" class="linkbtn" id="pkbSelectAllBtn">เลือกทั้งหมด</button>
+        <button type="button" class="linkbtn" id="pkbSelectNoneBtn">ไม่เลือกเลย</button>
+      </div>
+      <div class="pkb-grid" id="pkbGrid"></div>
+      <div class="pkb-applybar">
+        <button type="button" class="pk-btn pk-yes" id="pkbApplyYesBtn">ทำเครื่องหมายเป็น "ซอง"</button>
+        <button type="button" class="pk-btn pk-no" id="pkbApplyNoBtn">ทำเครื่องหมายเป็น "ไม่ใช่ซอง"</button>
+      </div>
+      <div class="pkb-result hidden" id="pkbResultBox"></div>
     </div>
-    <div class="pk-stage" id="pkStage"></div>
   </section>
 
   <div class="modal-overlay hidden" id="storeModalOverlay">
@@ -2278,7 +2347,8 @@ function ensureTunsongListLoaded(){
    dequeues from `pageQueue` (fetching more in the background well before it runs dry), and going
    back never mutates either array — it only moves `pos`. */
 const PK = {
-  filterC1: '', categories: [], vocabLoaded: false, vocabLoading: false,
+  view: 'single',            // 'single' (ทีละชิ้น) | 'bulk' (เลือกทีละหมวด) — which sub-view is showing
+  filterC1: '', categories: [], vocabTree: {}, vocabLoaded: false, vocabLoading: false,
   seen: [], pageQueue: [], pos: 0,
   cdn: '', remaining: 0, fetching: false, exhausted: false, fetchCooldown: false, loadError: '',
   pending: new Map(),        // barcode -> "YES" | "NO" — decided but not yet flushed to the server
@@ -2300,7 +2370,11 @@ async function loadPkVocab(){
   if (!d.ok || !d.tree) { toast(backendMsg(d, 'โหลดหมวดหมู่ไม่สำเร็จ'), true); return; }
   PK.vocabLoaded = true;
   PK.categories = Object.keys(d.tree);
+  PK.vocabTree = d.tree;   // full c1 -> {c2: [c3...]} map — bulk mode's c2/c3 drill-down needs it,
+                           // not just the top-level list ทีละชิ้น's filter uses
   renderPkCategorySelect();
+  renderPkBulkCategorySelects();   // the bulk selects are static markup (just hidden while unused),
+                                   // so this is safe to call whether or not เลือกทีละหมวด has been opened yet
 }
 function renderPkCategorySelect(){
   const sel = $('pkCategorySelect'); if (!sel) return;
@@ -2506,6 +2580,237 @@ function renderSachet(){
   $('pkStage').innerHTML = pkStageHtml();
 }
 
+/* ================= ประเภทบรรจุภัณฑ์ — เลือกทีละหมวด (bulk-by-category mode) =================
+   The one-at-a-time flow above is right for ambiguous items but far too slow as the ONLY tool
+   when a whole subcategory shares one answer. This view: pick c1 (the only server-side filter
+   sachetqueue supports) -> optionally narrow to c2/c3 client-side -> everything shown starts
+   selected, since the premise is "this category is one rule, review OUT the exceptions" ->
+   one confirmed batch write. `items` holds whatever sachetqueue last returned for the current
+   c1; `selected` is the barcode set the next apply acts on; `lastBatch` is the undo target for
+   the most recent successful apply and lives until another apply replaces it or the tab is left. */
+const PKB = {
+  c1: '', c2: '', c3: '',
+  items: [], selected: new Set(),
+  cdn: '', remaining: 0,
+  loading: false, loadError: '', started: false,
+  applying: false, undoing: false,
+  lastBatch: null   // { value, barcodes, updated, skipped, notFound } or null
+};
+
+function renderPkBulkC1Select(){
+  const sel = $('pkbC1'); if (!sel) return;
+  sel.innerHTML = '<option value="">ทุกหมวดหมู่</option>' +
+    PK.categories.map(c => `<option value="${esc(c)}"${c === PKB.c1 ? ' selected' : ''}>${esc(c)}</option>`).join('');
+}
+function renderPkBulkC2Select(){
+  const sel = $('pkbC2'); if (!sel) return;
+  const opts = (PKB.c1 && PK.vocabTree[PKB.c1] && typeof PK.vocabTree[PKB.c1] === 'object')
+    ? Object.keys(PK.vocabTree[PKB.c1]) : [];
+  sel.innerHTML = '<option value="">ทุกหมวดหมู่ย่อย</option>' +
+    opts.map(c => `<option value="${esc(c)}"${c === PKB.c2 ? ' selected' : ''}>${esc(c)}</option>`).join('');
+}
+function renderPkBulkC3Select(){
+  const sel = $('pkbC3'); if (!sel) return;
+  const branch = PKB.c1 && PK.vocabTree[PKB.c1];
+  const opts = (branch && Array.isArray(branch[PKB.c2])) ? branch[PKB.c2] : [];
+  sel.innerHTML = '<option value="">ทั้งหมด</option>' +
+    opts.map(c => `<option value="${esc(c)}"${c === PKB.c3 ? ' selected' : ''}>${esc(c)}</option>`).join('');
+}
+function renderPkBulkCategorySelects(){
+  renderPkBulkC1Select(); renderPkBulkC2Select(); renderPkBulkC3Select();
+}
+
+/** Only c1 is a server-side filter (sachetqueue&c1=...) — c2/c3 narrow the already-fetched
+ *  `items` client-side, so changing them never refetches, only changing c1 does. */
+function pkBulkFiltered(){
+  return PKB.items.filter(x => (!PKB.c2 || x.c2 === PKB.c2) && (!PKB.c3 || x.c3 === PKB.c3));
+}
+/** Every card starts selected — the point of this mode is asserting one rule for a whole
+ *  category, so the default must be "apply to everything shown" and the admin clicks OFF
+ *  the exceptions, not the other way around. */
+function pkBulkResetSelection(){
+  PKB.selected = new Set(pkBulkFiltered().map(x => x.barcode));
+}
+
+function changePkBulkC1(v){
+  if (v === PKB.c1) return;
+  PKB.c1 = v; PKB.c2 = ''; PKB.c3 = '';
+  renderPkBulkC2Select(); renderPkBulkC3Select();
+  fetchPkBulkQueue();
+}
+function changePkBulkC2(v){
+  if (v === PKB.c2) return;
+  PKB.c2 = v; PKB.c3 = '';
+  renderPkBulkC3Select();
+  pkBulkResetSelection();
+  renderPkBulk();
+}
+function changePkBulkC3(v){
+  if (v === PKB.c3) return;
+  PKB.c3 = v;
+  pkBulkResetSelection();
+  renderPkBulk();
+}
+
+async function fetchPkBulkQueue(){
+  if (PKB.loading) return;
+  PKB.loading = true; PKB.loadError = '';
+  renderPkBulk();
+  const qs = `?action=sachetqueue&limit=300` + (PKB.c1 ? `&c1=${encodeURIComponent(PKB.c1)}` : '');
+  const d = await api(qs);
+  PKB.loading = false;
+  if (!d.ok || !Array.isArray(d.p)) {
+    PKB.loadError = backendMsg(d, 'โหลดรายการไม่สำเร็จ');
+    renderPkBulk();
+    return;
+  }
+  if (typeof d.cdn === 'string') PKB.cdn = d.cdn;
+  if (typeof d.remaining === 'number') PKB.remaining = d.remaining;
+  PKB.items = d.p;
+  pkBulkResetSelection();
+  renderPkBulk();
+}
+
+function ensurePkBulkLoaded(){
+  loadPkVocab();                 // shared with ทีละชิ้น; guarded, so calling again is cheap
+  renderPkBulkCategorySelects(); // paints whatever vocab is already loaded; loadPkVocab repaints again once it resolves
+  if (!PKB.started) {
+    PKB.started = true;
+    fetchPkBulkQueue();
+  } else {
+    renderPkBulk();
+  }
+}
+
+function pkBulkSelectAll(){
+  const rows = pkBulkFiltered();
+  PKB.selected = new Set(rows.map(x => x.barcode));
+  $('pkbGrid').querySelectorAll('.pkb-card').forEach(el => el.classList.add('on'));
+  $('pkbCount').textContent = `เลือกอยู่ ${PKB.selected.size} จาก ${rows.length}`;
+}
+function pkBulkSelectNone(){
+  PKB.selected = new Set();
+  $('pkbGrid').querySelectorAll('.pkb-card').forEach(el => el.classList.remove('on'));
+  $('pkbCount').textContent = `เลือกอยู่ 0 จาก ${pkBulkFiltered().length}`;
+}
+
+function pkBulkCardHtml(item){
+  const src = item.img ? item.img.replace('~', PKB.cdn || '') : '';
+  const thumb = src ? `<img class="pkb-thumb" src="${esc(src)}" alt="" loading="lazy">` : `<div class="pkb-thumb-ph">ไม่มีรูป</div>`;
+  const sizeUnit = [item.size, item.unit].filter(Boolean).join(' ');
+  const hint = item.hint === 'sachet' ? `<div class="pkb-hint">น่าจะเป็นซอง</div>` : '';
+  const on = PKB.selected.has(item.barcode) ? ' on' : '';
+  return `<button type="button" class="pkb-card${on}" data-barcode="${esc(item.barcode)}">
+      ${thumb}
+      ${item.brand ? `<div class="pkb-brand">${esc(item.brand)}</div>` : ''}
+      <div class="pkb-item">${esc(item.item || '(ไม่มีชื่อ)')}</div>
+      ${item.sku ? `<div class="pkb-sku">${esc(item.sku)}</div>` : ''}
+      <div class="pkb-size">${esc(sizeUnit || '—')}</div>
+      ${hint}
+    </button>`;
+}
+// Built as one string and set via innerHTML ONCE — the grid can hold up to 300 cards, so
+// per-card appendChild or per-card listeners would be the wrong shape at that size.
+function pkBulkGridHtml(rows){ return rows.map(pkBulkCardHtml).join(''); }
+
+function pkBulkResultHtml(){
+  if (!PKB.lastBatch) return '';
+  const { value, barcodes, updated, skipped, notFound } = PKB.lastBatch;
+  const label = value === 'YES' ? 'ซอง' : 'ไม่ใช่ซอง';
+  // Honest reporting: skipped rows already had a decision and were deliberately left alone by
+  // onlyBlank — that is correct behaviour, not partial failure, but it must never read as if
+  // every selected row got written.
+  let msg = `บันทึกเป็น "${label}" แล้ว ${updated} จาก ${barcodes.length} รายการ`;
+  if (skipped) msg += ` · ข้าม ${skipped} รายการ (มีคำตอบอยู่ก่อนแล้ว จึงไม่ถูกเขียนทับ)`;
+  if (notFound) msg += ` · ไม่พบ ${notFound} รายการในระบบ`;
+  return `
+    <div>${esc(msg)}</div>
+    <div><button type="button" class="linkbtn" id="pkbUndoBtn"${PKB.undoing ? ' disabled' : ''}>
+      เลิกทำ — คืนทั้งหมดเป็น "ยังไม่ระบุ"</button></div>
+  `;
+}
+
+function renderPkBulk(){
+  const rows = pkBulkFiltered();
+  $('pkbRemaining').textContent = `เหลือ ${PKB.remaining} รายการ` + (PKB.c1 ? ` ในหมวด "${PKB.c1}"` : '');
+  $('pkbCount').textContent = `เลือกอยู่ ${PKB.selected.size} จาก ${rows.length}`;
+  $('pkbGrid').innerHTML = PKB.loading
+    ? `<div class="pk-empty"><span class="rv-spinner" aria-hidden="true"></span>กำลังโหลด…</div>`
+    : PKB.loadError
+      ? `<div class="pk-empty pk-empty-err">${esc(PKB.loadError)} <button type="button" class="linkbtn" id="pkbRetryBtn">ลองใหม่</button></div>`
+      : (rows.length ? pkBulkGridHtml(rows) : `<div class="pk-empty">ไม่มีรายการที่ต้องแท็กในหมวดนี้</div>`);
+  const disableActions = !rows.length || PKB.applying || PKB.loading;
+  $('pkbApplyYesBtn').disabled = disableActions;
+  $('pkbApplyNoBtn').disabled = disableActions;
+  $('pkbSelectAllBtn').disabled = !rows.length;
+  $('pkbSelectNoneBtn').disabled = !rows.length;
+  $('pkbResultBox').classList.toggle('hidden', !PKB.lastBatch);
+  $('pkbResultBox').innerHTML = pkBulkResultHtml();
+}
+
+/** Fires the actual bulkSachet write. Shared by both the apply buttons (value YES/NO) and
+ *  undo (value "") — same batch POST shape as everything else, text/plain body, single result
+ *  row keyed "bulkSachet". */
+function postBulkSachet(value, barcodes){
+  return api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ type: 'bulkSachet', value, barcodes, onlyBlank: true }) }, 30000);
+}
+
+/** A bulk write is the one action on this tab that is expensive to get wrong — one click can
+ *  touch hundreds of rows — so it is always gated on a confirmation naming the exact count and
+ *  target value, never fired straight from the button click. */
+async function applyPkBulk(value){
+  if (PKB.applying) return;
+  const barcodes = [...PKB.selected];
+  if (!barcodes.length) { toast('ยังไม่ได้เลือกสินค้าเลยสักชิ้น', true); return; }
+  const label = value === 'YES' ? 'ซอง' : 'ไม่ใช่ซอง';
+  const sure = confirm(`ทำเครื่องหมาย ${barcodes.length} รายการเป็น "${label}" ใช่หรือไม่?\n` +
+    `(รายการที่มีคำตอบอยู่แล้วจะถูกข้ามโดยอัตโนมัติ)`);
+  if (!sure) return;
+  PKB.applying = true;
+  renderPkBulk();
+  const d = await postBulkSachet(value, barcodes);
+  PKB.applying = false;
+  const r = d.ok && Array.isArray(d.results) ? d.results.find(x => x.id === 'bulkSachet') : null;
+  const rowOk = r && r.status && r.status !== 'error' && r.status !== 'failed';
+  if (!rowOk) {
+    toast(backendMsg(d, 'บันทึกไม่สำเร็จ'), true);
+    renderPkBulk();
+    return;
+  }
+  PKB.lastBatch = { value, barcodes, updated: r.updated || 0, skipped: r.skipped || 0, notFound: r.notFound || 0 };
+  // The batch is resolved either way per row (written, skipped, or not found) — pull every
+  // attempted barcode off the grid so progress is visible and nothing gets re-applied by accident.
+  const done = new Set(barcodes);
+  PKB.items = PKB.items.filter(x => !done.has(x.barcode));
+  pkBulkResetSelection();
+  PKB.remaining = Math.max(0, PKB.remaining - (r.updated || 0));
+  renderPkBulk();
+}
+
+/** Reverts the most recent batch — value:"" is UNDO on the backend, ignoring onlyBlank on
+ *  purpose, so this always reverts every barcode from that batch regardless of its current
+ *  state. Offered until another apply overwrites PKB.lastBatch or the ประเภทบรรจุภัณฑ์ tab is
+ *  left (see showScreen). */
+async function undoPkBulk(){
+  if (!PKB.lastBatch || PKB.undoing) return;
+  const batch = PKB.lastBatch;
+  PKB.undoing = true;
+  renderPkBulk();
+  const d = await postBulkSachet('', batch.barcodes);
+  PKB.undoing = false;
+  const r = d.ok && Array.isArray(d.results) ? d.results.find(x => x.id === 'bulkSachet') : null;
+  const rowOk = r && r.status && r.status !== 'error' && r.status !== 'failed';
+  if (!rowOk) {
+    toast(backendMsg(d, 'เลิกทำไม่สำเร็จ'), true);
+    renderPkBulk();
+    return;
+  }
+  toast(`เลิกทำแล้ว ${r.updated || 0} รายการ กลับเป็น "ยังไม่ระบุ"`);
+  PKB.lastBatch = null;
+  renderPkBulk();
+}
+
 /* ================= MODE / TABS ================= */
 function setMode(mode, persist = true){
   S.mode = mode;
@@ -2518,12 +2823,28 @@ function setMode(mode, persist = true){
   if (persist) saveDraft();
 }
 
+/** Toggles ทีละชิ้น <-> เลือกทีละหมวด WITHIN the ประเภทบรรจุภัณฑ์ tab. Purely a visibility swap —
+ *  neither PK's (single-item) nor PKB's (bulk) state is touched, so decisions pending in one
+ *  view are never lost by looking at the other. */
+function setPkMode(view){
+  if (PK.view === view) return;
+  PK.view = view;
+  $('pkModeSingleBtn').classList.toggle('on', view === 'single');
+  $('pkModeBulkBtn').classList.toggle('on', view === 'bulk');
+  $('pkSingleView').classList.toggle('hidden', view !== 'single');
+  $('pkBulkView').classList.toggle('hidden', view !== 'bulk');
+  if (view === 'bulk') ensurePkBulkLoaded();
+}
+
 let currentScreen = 'entry';
 function showScreen(which){
   // Leaving ประเภทบรรจุภัณฑ์ is one of the flush triggers — looking away should never leave a
   // pile of tagged-but-unsaved decisions sitting only in memory (they are also in localStorage,
   // but the whole point of the count-based/idle flush is to not depend on that as the only net).
-  if (currentScreen === 'sachet' && which !== 'sachet' && PK.pending.size) flushPkPending();
+  if (currentScreen === 'sachet' && which !== 'sachet') {
+    if (PK.pending.size) flushPkPending();
+    PKB.lastBatch = null;   // the เลิกทำ offer is only good "until ... the user leaves the tab" (spec)
+  }
   currentScreen = which;
   $('entryScreen').classList.toggle('hidden', which !== 'entry');
   $('reviewScreen').classList.toggle('hidden', which !== 'review');
@@ -2695,6 +3016,9 @@ $('tabTunsong').addEventListener('click', () => { showScreen('tunsong'); ensureT
 $('tabSachet').addEventListener('click', () => { showScreen('sachet'); ensurePkLoaded(); });
 
 /* ---- ประเภทบรรจุภัณฑ์ tab wiring ---- */
+$('pkModeSingleBtn').addEventListener('click', () => setPkMode('single'));
+$('pkModeBulkBtn').addEventListener('click', () => setPkMode('bulk'));
+
 $('pkCategorySelect').addEventListener('change', () => changePkCategory($('pkCategorySelect').value));
 // One delegated handler covers both the on-screen buttons and the retry link — same code path
 // the keyboard shortcuts use (see the global keydown listener below), per spec.
@@ -2704,17 +3028,47 @@ $('pkStage').addEventListener('click', e => {
   if (e.target.id === 'pkRetryBtn') { PK.loadError = ''; ensureCurrentItem(); renderSachet(); }
 });
 // The whole ประเภทบรรจุภัณฑ์ interface IS the keyboard, but this listener is global (document),
-// so it must (a) only act while that tab is showing and (b) never swallow 1/2/3 while the admin
-// is typing in one of the other four tabs' many text fields — hence the currentScreen guard and
-// the input/textarea/select check, in that order, before anything else runs.
+// so it must (a) only act while that tab is showing, (b) never fire while เลือกทีละหมวด is the
+// active sub-view — that mode is click-only, and a stray 1/2/3 silently tagging a product would
+// be invisible and wrong — and (c) never swallow 1/2/3 while the admin is typing in one of the
+// other four tabs' many text fields — hence the currentScreen guard, the PK.view guard, and the
+// input/textarea/select check, in that order, before anything else runs.
 document.addEventListener('keydown', e => {
   if (currentScreen !== 'sachet') return;
+  if (PK.view !== 'single') return;
   const tag = e.target.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   if (e.key === '1') { e.preventDefault(); recordDecision('YES'); }
   else if (e.key === '2') { e.preventDefault(); recordDecision('NO'); }
   else if (e.key === '3' || e.key === 's' || e.key === 'S') { e.preventDefault(); recordDecision('SKIP'); }
   else if (e.key === 'ArrowLeft' || e.key === 'Backspace') { e.preventDefault(); goBackSachet(); }
+});
+
+/* ---- ประเภทบรรจุภัณฑ์: เลือกทีละหมวด (bulk-by-category) wiring ---- */
+$('pkbC1').addEventListener('change', () => changePkBulkC1($('pkbC1').value));
+$('pkbC2').addEventListener('change', () => changePkBulkC2($('pkbC2').value));
+$('pkbC3').addEventListener('change', () => changePkBulkC3($('pkbC3').value));
+$('pkbReloadBtn').addEventListener('click', fetchPkBulkQueue);
+
+$('pkbSelectAllBtn').addEventListener('click', pkBulkSelectAll);
+$('pkbSelectNoneBtn').addEventListener('click', pkBulkSelectNone);
+
+// Delegated: the grid can hold up to 300 cards, so one listener on the container (not one per
+// card) does both the retry link and the click-to-toggle-selection behaviour.
+$('pkbGrid').addEventListener('click', e => {
+  if (e.target.id === 'pkbRetryBtn') { fetchPkBulkQueue(); return; }
+  const card = e.target.closest('.pkb-card');
+  if (!card) return;
+  const bc = card.dataset.barcode;
+  if (PKB.selected.has(bc)) PKB.selected.delete(bc); else PKB.selected.add(bc);
+  card.classList.toggle('on');
+  $('pkbCount').textContent = `เลือกอยู่ ${PKB.selected.size} จาก ${pkBulkFiltered().length}`;
+});
+
+$('pkbApplyYesBtn').addEventListener('click', () => applyPkBulk('YES'));
+$('pkbApplyNoBtn').addEventListener('click', () => applyPkBulk('NO'));
+$('pkbResultBox').addEventListener('click', e => {
+  if (e.target.id === 'pkbUndoBtn') undoPkBulk();
 });
 // A backgrounded/closed tab is exactly the moment an in-flight batch is most at risk of never
 // firing — flush whatever is pending the instant the page is hidden, not just on the idle timer.
