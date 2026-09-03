@@ -747,6 +747,14 @@ const rowMeta = new Map();   // rowId -> { checked, product, notFound, offline }
 // Kept separate from rowMeta (which commitBarcode replaces wholesale on every re-lookup) so a
 // typed description survives a barcode being re-checked, and is only ever dropped on row removal.
 const rowDesc = new Map();
+// rowId -> the obs_id used for this row's last submit attempt. Minted lazily inside pushRow()
+// (submitBatch) — never for a row that is never submitted — and reused on every retry so the
+// backend's duplicate check can recognise a resend of the same content instead of writing it
+// twice. Kept separate from rowMeta (which commitBarcode replaces wholesale on EVERY blur, even
+// without an edit) so merely tabbing through an already-submitted row cannot lose its id; only
+// an actual keystroke in barcode/price/qty, or a flag change, clears it (see the delegated
+// input/change listeners on #gridBody below).
+const rowObsId = new Map();
 
 function rowHtml(id, data = {}){
   const barcode = esc(data.barcode || '');
@@ -777,6 +785,9 @@ function addRow(data = {}, focus = true){
   $('gridBody').insertAdjacentHTML('beforeend', rowHtml(id, data));
   rowMeta.set(id, { checked: false, product: null, notFound: false, offline: false });
   rowDesc.set(id, data.desc || '');
+  // Restore a draft row's obs_id so a retry after a browser close resends the SAME id, not a
+  // fresh one — otherwise a crash right after a lost-response submit would duplicate on reopen.
+  if (data.obsId) rowObsId.set(id, data.obsId);
   markQtyValidity(rowEl(id));
   if (data.barcode) { updateBarcodeValidity(id); setProductSearching(id); queueLookup(id, data.barcode); }
   if (focus) focusCell(id, 'barcode');
@@ -789,6 +800,7 @@ function removeRow(id){
   tr.remove();
   rowMeta.delete(id);
   rowDesc.delete(id);
+  rowObsId.delete(id);
   if (!allRowIds().length) addRow({}, false);   // the grid always keeps at least one row to type into
   saveDraft(); renderSummary(); updateSubmitButton();
 }
@@ -874,7 +886,8 @@ function collectRows(){
       price: tr.querySelector('.cell-price').value.trim(),
       flag: tr.querySelector('.cell-flag').value,
       qty: qtyEl ? qtyEl.value.trim() : '',
-      desc: rowDesc.get(id) || ''
+      desc: rowDesc.get(id) || '',
+      obsId: rowObsId.get(id) || ''
     };
   });
 }
@@ -982,8 +995,9 @@ function addSelRow(data = {}, focus = true){
   $('selGridBody').insertAdjacentHTML('beforeend', selRowHtml(id, data));
   // meta.brand is seeded from `data`, not '' — so a restored row's item/sku (already in the
   // DOM above) survive the fetch below instead of being wiped by commitSelBrand's change check.
+  // obsId is restored the same way — see the barcode grid's addRow() for why that matters.
   selRowMeta.set(id, { brand: data.brand || '', products: null, resolved: null,
-    barcode: data.barcode || '', ambiguous: false, fetchToken: 0 });
+    barcode: data.barcode || '', ambiguous: false, fetchToken: 0, obsId: data.obsId || '' });
   renderSelBarcode(id);
   markQtyValidity(selRowEl(id));
   if (data.brand) fetchBrandProducts(id, data.brand);   // draft restore: re-fetch so item/sku pickers work
@@ -1012,8 +1026,14 @@ function computeRowResolution(id){
   if (item) matches = matches.filter(p => String(p.item || '').trim() === item);
   if (sku) matches = matches.filter(p => String(p.sku || '').trim() === sku);
   const resolved = (brand && item && matches.length === 1) ? matches[0] : null;
+  const newBarcode = resolved ? String(resolved.barcode) : '';
+  // The resolved product (hence the observation's barcode) just changed — a stale obs_id must
+  // never be resent under different content, or the backend would answer "duplicate" and
+  // silently drop the correction. Covers item/sku edits; a brand edit already gets a fresh meta
+  // object (see commitSelBrand) so its obsId is dropped there.
+  if (newBarcode !== meta.barcode) delete meta.obsId;
   meta.resolved = resolved;
-  meta.barcode = resolved ? String(resolved.barcode) : '';
+  meta.barcode = newBarcode;
   meta.ambiguous = !!(brand && item && !resolved);
   selRowMeta.set(id, meta);
   renderSelBarcode(id);
@@ -1058,6 +1078,8 @@ function commitSelBrand(id, jump){
   const brand = tr.querySelector('.sel-brand').value.trim();
   let meta = selRowMeta.get(id) || {};
   if (meta.brand !== brand) {
+    // A fresh meta object — no obsId carried forward — since the resolved product (and so the
+    // barcode an earlier submit attempt would have used) no longer applies to this row.
     meta = { brand, products: null, resolved: null, barcode: '', ambiguous: false, fetchToken: meta.fetchToken || 0 };
     tr.querySelector('.sel-item').value = '';
     tr.querySelector('.sel-sku').value = '';
@@ -1154,7 +1176,8 @@ function collectSelRows(){
       price: tr.querySelector('.sel-price').value.trim(),
       flag: tr.querySelector('.sel-flag').value,
       qty: qtyEl ? qtyEl.value.trim() : '',
-      barcode: meta.barcode || ''   // '' whenever brand/item/sku do not resolve to exactly one product
+      barcode: meta.barcode || '',   // '' whenever brand/item/sku do not resolve to exactly one product
+      obsId: meta.obsId || ''
     };
   });
 }
@@ -1213,11 +1236,14 @@ function updateSubmitButton(){
 function saveDraft(){
   // qty rides along with flag on every row — losing a typed minimum quantity on an accidentally
   // closed tab is the same class of loss as losing a price.
-  const rows = collectRows().map(r => ({ barcode: r.barcode, price: r.price, flag: r.flag, qty: r.qty, desc: r.desc }));
+  // obsId rides along too: a browser closed right after a submit whose response was lost must
+  // reopen with the SAME id still attached, or the retry mints a fresh one and duplicates
+  // whatever the lost response actually wrote.
+  const rows = collectRows().map(r => ({ barcode: r.barcode, price: r.price, flag: r.flag, qty: r.qty, desc: r.desc, obsId: r.obsId }));
   // selRows carries brand/item/sku too — not just the resolved barcode — so a row the admin
   // was still narrowing (not yet resolved) is not silently lost on reload.
   const selRows = collectSelRows().map(r => ({ brand: r.brand, item: r.item, sku: r.sku,
-    barcode: r.barcode, price: r.price, flag: r.flag, qty: r.qty }));
+    barcode: r.barcode, price: r.price, flag: r.flag, qty: r.qty, obsId: r.obsId }));
   ls.set('ps_admin_draft', {
     storeId: S.storeId, storeName: S.store, date: $('dateInput').value, mode: S.mode, rows, selRows
   });
@@ -1240,6 +1266,7 @@ function restoreDraft(){
 function clearGridKeepStoreDate(){
   $('gridBody').innerHTML = '';
   rowMeta.clear();
+  rowObsId.clear();
   addRow({}, S.mode === 'barcode');
   $('selGridBody').innerHTML = '';
   selRowMeta.clear();
@@ -1274,10 +1301,12 @@ let submitting = false;
  * away work the user never got a chance to finish.
  */
 function keepOnlyFailedRows(confirmed){
-  const isConfirmed = r => {
-    const pv = priceValue(r.price);
-    return r.barcode && pv !== null && confirmed.has(String(r.barcode) + '|' + pv);
-  };
+  // Matched by obs_id, not barcode+price — every submitted row now carries a stable id (see
+  // pushRow in submitBatch), so this is exact even when two rows share a barcode+price. A
+  // surviving row keeps its obsId as part of `r` (collectRows/collectSelRows include it) and
+  // addRow/addSelRow restore it below, which is exactly what makes the NEXT retry reuse the
+  // same id instead of minting a fresh one.
+  const isConfirmed = r => !!r.obsId && confirmed.has(r.obsId);
   const survivors = collectRows().filter(r => !isConfirmed(r));
   const selSurvivors = collectSelRows().filter(r => !isConfirmed(r));
   clearGridKeepStoreDate();
@@ -1305,15 +1334,25 @@ async function submitBatch(){
   let skippedQty = 0;   // subset of `skipped`: real barcode+price, but ราคาส่ง with no minimum qty
   // Barcode-mode and select-mode rows end up as identical observation records — same shape,
   // same source — so both grids feed the same push, rather than two separate submit paths.
-  const pushRow = (r, desc) => {
+  const pushRow = (r, desc, isSel) => {
     const pv = priceValue(r.price);
     if (!r.barcode || pv === null) { skipped++; return; }
     // A ราคาส่ง row with no positive minimum quantity is meaningless once it's in the Sheet
     // ("ซื้อ ? ชิ้นขึ้นไป ชิ้นละ 45" — buys what?) — skip writing it rather than store junk, but
     // it still had a real barcode+price typed in, so keepOnlyFailedRows below must not lose it.
     if (r.flag === 'wholesale' && !(Number(r.qty) > 0)) { skipped++; skippedQty++; return; }
+    // Reuse the row's own obs_id across retries — minting a fresh one on every submit is what let
+    // a lost-response retry write the same row twice, since the backend's duplicate check keys on
+    // obs_id. Mint lazily, on first submit only, and store it straight back onto the row so a
+    // retry (even after a browser close — see saveDraft) resends this exact id.
+    let obsId = r.obsId;
+    if (!obsId) {
+      obsId = makeId('O');
+      if (isSel) { const m = selRowMeta.get(r.id); if (m) m.obsId = obsId; }
+      else rowObsId.set(r.id, obsId);
+    }
     items.push(buildObs({
-      obsId: makeId('O'), ts, storeId: S.storeId,
+      obsId, ts, storeId: S.storeId,
       barcode: r.barcode, price: pv, flag: r.flag, by: DEVICE, source: 'manual',
       // Just passed through — buildObs itself only attaches min_qty when flag is "wholesale" AND
       // this is a positive number, which pushRow already guarantees by this point.
@@ -1329,8 +1368,12 @@ async function submitBatch(){
       newProduct: { brand: '', item: (desc || '').trim(), sku: '', photo: null }
     }));
   };
-  collectRows().forEach(r => pushRow(r, r.desc));
-  collectSelRows().forEach(r => pushRow(r, ''));
+  collectRows().forEach(r => pushRow(r, r.desc, false));
+  collectSelRows().forEach(r => pushRow(r, '', true));
+  // Flush the (possibly newly minted) obs_ids to localStorage BEFORE the network call — if the
+  // browser dies while the request is in flight, restoreDraft() must bring back the same ids
+  // this attempt sent, not blank ones that would mint fresh ids and duplicate on the next try.
+  saveDraft();
 
   if (!items.length) {
     // Distinguish "nothing typed" from "typed, but every ราคาส่ง row is missing its quantity" —
@@ -1353,30 +1396,41 @@ async function submitBatch(){
   submitting = false;
 
   if (!d.ok || !Array.isArray(d.results)) {
-    // Draft stays intact on failure — nothing typed is thrown away over a bad connection.
-    setSubmitStatus('บันทึกไม่สำเร็จ — ข้อมูลยังอยู่ในฉบับร่าง ลองใหม่อีกครั้ง', true);
-    toast('บันทึกไม่สำเร็จ', true);
+    // Draft stays intact on failure — nothing typed is thrown away over a bad connection. It is
+    // safe to just press save again: every row above already kept the SAME obs_id it just sent
+    // (saveDraft ran before this request went out), so a retry resends identical ids and the
+    // backend's duplicate check will recognise anything that actually made it through — it can
+    // never end up written twice, even if this response was lost after the write succeeded.
+    setSubmitStatus('บันทึกไม่สำเร็จ — ข้อมูลยังอยู่ในฉบับร่าง กดบันทึกอีกครั้งได้เลย ระบบจะไม่บันทึกซ้ำแม้ครั้งก่อนจะบันทึกไปแล้วจริง', true);
+    toast('บันทึกไม่สำเร็จ — กดบันทึกซ้ำได้อย่างปลอดภัย', true);
     updateSubmitButton();
     return;
   }
 
-  // "duplicate" means the row is already safely in the Sheet — done, not failed.
-  const ok = new Set(d.results.filter(r => r.status === 'written' || r.status === 'duplicate')
-                              .map(r => r.id));
+  const writtenIds = new Set(d.results.filter(r => r.status === 'written').map(r => r.id));
+  // "duplicate" means the backend recognised this obs_id from an earlier attempt and did NOT
+  // write it again — the row is already safely in the Sheet, so this counts as done, not failed.
+  const duplicateIds = new Set(d.results.filter(r => r.status === 'duplicate').map(r => r.id));
+  const ok = new Set([...writtenIds, ...duplicateIds]);
   const failed = items.filter(it => !ok.has(it.obs_id));
-  // Confirmed rows are identified by barcode+price, since obs_id is generated at submit time
-  // and does not exist on the grid rows themselves.
-  const confirmedKeys = new Set(items.filter(it => ok.has(it.obs_id))
-                                     .map(it => String(it.barcode) + '|' + it.price));
+  // Confirmed rows are identified by their own obs_id — every row now carries a stable one.
+  const confirmedKeys = new Set(items.filter(it => ok.has(it.obs_id)).map(it => it.obs_id));
   const blankSkipped = skipped - skippedQty;
   const qtyMsg = skippedQty ? ` · ข้าม ${skippedQty} แถว (ราคาส่งไม่มีจำนวนขั้นต่ำ)` : '';
   const skipMsg = (blankSkipped ? ` · ข้ามไป ${blankSkipped} แถว (ว่างหรือไม่มีราคา)` : '') + qtyMsg;
+  const writtenCount = writtenIds.size, dupCount = duplicateIds.size;
+  // Told apart so a retry that actually just confirmed an earlier (response-lost) success reads
+  // as success, not as a mystery the admin has to go check the Sheet for.
+  const statusMsg = dupCount === 0 ? `บันทึกสำเร็จ ${writtenCount} รายการ`
+    : writtenCount === 0 ? 'ทุกรายการถูกบันทึกไว้แล้วก่อนหน้านี้ — ไม่มีการเขียนซ้ำ'
+    : `บันทึกแล้ว ${writtenCount} รายการ · ${dupCount} รายการมีอยู่แล้ว (บันทึกซ้ำไม่ถูกเขียนซ้ำ)`;
+  const toastMsg = dupCount === 0 ? `บันทึกแล้ว ${writtenCount} รายการ` : statusMsg;
 
   if (failed.length) {
     // Never clear rows the server did not confirm. Silently dropping typed work because the
     // response "looked" successful is the worst outcome this page can produce.
     keepOnlyFailedRows(confirmedKeys);
-    setSubmitStatus(`บันทึก ${ok.size} รายการ · ${failed.length} แถวไม่สำเร็จ ยังอยู่ในตาราง${qtyMsg}`, true);
+    setSubmitStatus(`${statusMsg} · ${failed.length} แถวไม่สำเร็จ ยังอยู่ในตาราง${qtyMsg}`, true);
     toast(`${failed.length} แถวไม่สำเร็จ`, true);
     updateSubmitButton();
     return;
@@ -1386,14 +1440,14 @@ async function submitBatch(){
     // These rows had a real barcode+price typed in — only the quantity is missing — so they
     // stay on the grid for the admin to fix, same treatment as a row the server failed to write.
     keepOnlyFailedRows(confirmedKeys);
-    setSubmitStatus(`บันทึกสำเร็จ ${ok.size} รายการ${skipMsg}`, true);
+    setSubmitStatus(`${statusMsg}${skipMsg}`, true);
     toast(`ข้าม ${skippedQty} แถว (ราคาส่งไม่มีจำนวนขั้นต่ำ)`, true);
     updateSubmitButton();
     return;
   }
 
-  setSubmitStatus(`บันทึกสำเร็จ ${ok.size} รายการ${skipMsg}`);
-  toast(`บันทึกแล้ว ${ok.size} รายการ`);
+  setSubmitStatus(`${statusMsg}${skipMsg}`);
+  toast(toastMsg);
   clearGridKeepStoreDate();
 }
 
@@ -2214,21 +2268,33 @@ $('gridBody').addEventListener('focusout', e => {
 });
 $('gridBody').addEventListener('input', e => {
   const t = e.target;
-  if (t.classList.contains('cell-price')) updateSubmitButton();
-  else if (t.classList.contains('cell-desc')) {
-    const tr = t.closest('tr');
-    if (tr) rowDesc.set(Number(tr.dataset.row), t.value);
+  const tr = t.closest('tr'); if (!tr) return;
+  const id = Number(tr.dataset.row);
+  if (t.classList.contains('cell-barcode')) {
+    // The observation this row would submit just changed — a stale obs_id must never be
+    // resent under different content, or "duplicate" would make the backend silently refuse
+    // to write the correction. Does NOT touch rowMeta/lookup — that still only re-checks on
+    // commit (blur/Enter), same as before.
+    rowObsId.delete(id);
+  } else if (t.classList.contains('cell-price')) {
+    rowObsId.delete(id);
+    updateSubmitButton();
+  } else if (t.classList.contains('cell-desc')) {
+    rowDesc.set(id, t.value);   // desc only feeds new_product, not the observation — obsId stays
     renderSummary();
   } else if (t.classList.contains('cell-qty')) {
-    markQtyValidity(t.closest('tr'));
+    rowObsId.delete(id);
+    markQtyValidity(tr);
     updateSubmitButton();
   }
   scheduleDraftSave();
 });
 $('gridBody').addEventListener('change', e => {
   if (e.target.classList.contains('cell-flag')) {
+    const tr = e.target.closest('tr');
+    if (tr) rowObsId.delete(Number(tr.dataset.row));
     syncFlagQty(e.target);
-    markQtyValidity(e.target.closest('tr'));
+    markQtyValidity(tr);
     renderSummary(); updateSubmitButton(); saveDraft();
   }
 });
@@ -2270,11 +2336,20 @@ $('selGridBody').addEventListener('focusout', e => {
 $('selGridBody').addEventListener('input', e => {
   const t = e.target; const tr = t.closest('tr'); if (!tr) return;
   const id = Number(tr.dataset.selrow);
+  // sel-brand/item/sku changes clear obsId inside computeRowResolution once the row's
+  // resolution (hence its barcode) is recomputed on commit — see commitSelBrand/syncSelItem/
+  // syncSelSku. Price and qty affect the observation directly, so clear it right here.
   if (t.classList.contains('sel-brand')) renderSelBrandDrop(id);
   else if (t.classList.contains('sel-item')) renderSelItemDrop(id);
   else if (t.classList.contains('sel-sku')) renderSelSkuDrop(id);
-  else if (t.classList.contains('sel-price')) updateSubmitButton();
-  else if (t.classList.contains('cell-qty')) { markQtyValidity(tr); updateSubmitButton(); }
+  else if (t.classList.contains('sel-price')) {
+    const m = selRowMeta.get(id); if (m) delete m.obsId;
+    updateSubmitButton();
+  } else if (t.classList.contains('cell-qty')) {
+    const m = selRowMeta.get(id); if (m) delete m.obsId;
+    markQtyValidity(tr);
+    updateSubmitButton();
+  }
   scheduleDraftSave();
 });
 // focus does not bubble — must be captured — so the dropdown reopens when tabbing back into a field.
@@ -2287,8 +2362,10 @@ $('selGridBody').addEventListener('focus', e => {
 }, true);
 $('selGridBody').addEventListener('change', e => {
   if (e.target.classList.contains('sel-flag')) {
+    const tr = e.target.closest('tr');
+    if (tr) { const m = selRowMeta.get(Number(tr.dataset.selrow)); if (m) delete m.obsId; }
     syncFlagQty(e.target);
-    markQtyValidity(e.target.closest('tr'));
+    markQtyValidity(tr);
     renderSummary(); updateSubmitButton(); saveDraft();
   }
 });
