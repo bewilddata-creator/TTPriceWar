@@ -1,5 +1,12 @@
 /**
- * TT PRICE WARS — backend v19
+ * TT PRICE WARS — backend v20
+ *
+ * v20: Products gained column P, isSachet — "YES" | "NO" | "" (blank means NOT YET REVIEWED,
+ * never treat it as NO). New `action=sachetqueue` serves the tagging UI's work queue: products
+ * still blank in P, optionally restricted to one category_1, with a heuristic `hint` that is
+ * display-only and is never written back. needsInfo() now also surfaces the raw value (for the
+ * เติมข้อมูลสินค้า form) and buildAnalysis() appends an encoded `sachet` (0/1/2) to the END of
+ * each `p` row (for the viewer's packaging filter), so every earlier index keeps its meaning.
  *
  * v19: "เติมรหัสร้านที่ยังว่าง" menu item. A shop typed into the Stores tab by hand gets a name
  * but no store_id, and every endpoint requires column A — so the shop was invisible to all
@@ -53,6 +60,7 @@ const ANALYSIS_FILE = "pricescout-analysis.json";  // the one file buildAnalysis
 // a third of the wait, for pictures that are not needed to render a single result.
 const IMAGES_FILE = "pricescout-images.json";
 const SEQ_COL = 15;              // Products column O — monotonic append counter
+const SACHET_COL = 16;           // Products column P — "YES" | "NO" | "" (blank = not yet reviewed)
 const RECENT_OBS_WINDOW = 300;   // fallback only; the cache is the real retry guard
 const OBS_CACHE_SEC = 21600;     // 6h — far longer than any realistic retry
 
@@ -189,7 +197,8 @@ function doGet(e) {
   if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
   if (action === "tunsong") return tunsongEndpoint(e.parameter.barcode);
   if (action === "tunsonglist") return tunsongList(e.parameter.limit);
-  return json({ ok: true, msg: "TT Price Wars API v19" });
+  if (action === "sachetqueue") return sachetQueue(e.parameter.limit, e.parameter.c1);
+  return json({ ok: true, msg: "TT Price Wars API v20" });
 }
 
 /** Every form a barcode may appear in, since the Sheet stores them as numbers. */
@@ -434,18 +443,82 @@ function needsInfo(limitParam) {
       if (needs || !String(brands[i][0] || "").trim()) rows.push({ row: i + 2, needs: needs });
     }
     rows.forEach(function (hit) {
-      const r = ps.getRange(hit.row, 1, 1, 13).getValues()[0];   // A..M
+      const r = ps.getRange(hit.row, 1, 1, 16).getValues()[0];   // A..P — widened for isSachet
       if (!r[0]) return;
       out.push({
         barcode: String(r[0]), brand: r[1] || "", item: r[2] || "", sku: r[3] || "",
         size: r[4] || "", unit: r[5] || "", c1: r[6] || "", c2: r[7] || "", c3: r[8] || "",
         img: String(r[9] || "").replace(CDN_PREFIX, "~"),
         first_seen: (r[12] instanceof Date) ? Utilities.formatDate(r[12], tz, "yyyy-MM-dd") : String(r[12] || ""),
-        needs_info: hit.needs
+        needs_info: hit.needs,
+        // raw "YES"/"NO"/"" so the เติมข้อมูลสินค้า form can show and edit it — blank is a
+        // real state (not yet reviewed), never coerced to a boolean like needs_info is.
+        is_sachet: String(r[15] || "")
       });
     });
   }
   return json({ ok: true, cdn: CDN_PREFIX, p: out });
+}
+
+/** Heuristic-only sachet guess for the tagging UI — "sachet" or "". Never written to the
+ *  sheet, never treated as an answer; the human tap on the queue card is the actual answer. */
+function sachetHint(item, sku, size, unit) {
+  const n = Number(size);
+  const u = String(unit || "").trim().toLowerCase();
+  if (n > 0 && n <= 10 && (u === "ml" || u === "g")) return "sachet";
+  const hay = (String(item || "") + " " + String(sku || "")).toLowerCase();
+  const needles = ["ซอง", "sachet", "sample", "travel size"];
+  for (let i = 0; i < needles.length; i++) {
+    if (hay.indexOf(needles[i]) >= 0) return "sachet";
+  }
+  return "";
+}
+
+/**
+ * The sachet-tagging work queue: products whose column P (isSachet) is still BLANK, optionally
+ * restricted to one category_1 (exact match, case-insensitive). Never cached — a product just
+ * tagged must leave the queue on the very next fetch.
+ *
+ * `remaining` is the full count matching the filter, not the page size, so the UI's "N left"
+ * is honest even when only `limit` rows are returned.
+ */
+function sachetQueue(limitParam, c1Param) {
+  let limit = Number(limitParam) || 100;
+  if (limit < 1) limit = 100;
+  if (limit > 300) limit = 300;
+  const c1Filter = c1Param ? String(c1Param).trim().toLowerCase() : "";
+
+  const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
+  const last = ps.getLastRow();
+  const out = [];
+  let remaining = 0;
+  if (last > 1) {
+    const n = last - 1;
+    // Two narrow reads to decide which rows qualify, same pattern as needsInfo(): A..G covers
+    // barcode/brand/item/sku/size/unit/c1 in one contiguous call, isSachet (P) in a second —
+    // never all 16 columns of 21,000+ rows just to filter.
+    // TWO bulk reads and nothing else. A..J carries everything a queue card shows; P decides
+    // membership. Fetching the page's rows individually instead cost ~100 round trips per page
+    // — around 5s — and this endpoint is called continuously while someone is tagging.
+    const head = ps.getRange(2, 1, n, 10).getValues();          // A..J
+    const sach = ps.getRange(2, SACHET_COL, n, 1).getValues();  // P
+    for (let i = 0; i < n; i++) {
+      if (String(sach[i][0] || "").trim() !== "") continue;    // already reviewed (YES or NO)
+      const r = head[i];
+      if (!r[0]) continue;
+      if (c1Filter && String(r[6] || "").toLowerCase() !== c1Filter) continue;
+      remaining++;                       // counts the FULL matching set, not the page
+      if (out.length >= limit) continue;
+      out.push({
+        barcode: String(r[0]), brand: r[1] || "", item: r[2] || "", sku: r[3] || "",
+        size: r[4] || "", unit: r[5] || "",
+        img: String(r[9] || "").replace(CDN_PREFIX, "~"),
+        c1: r[6] || "", c2: r[7] || "", c3: r[8] || "",
+        hint: sachetHint(r[2], r[3], r[4], r[5])
+      });
+    }
+  }
+  return json({ ok: true, cdn: CDN_PREFIX, remaining: remaining, p: out });
 }
 
 /** Free-text product search. Stops at `limit` rather than filtering the whole tab. */
@@ -604,10 +677,11 @@ function buildAnalysis() {
   const base = [];
   const imgs = [];         // index-aligned with base[]; written to its own file
   const sizes = [];        // [size, unit] per product, appended to each row below
+  const sachets = [];      // encoded isSachet per product (0/1/2), appended LAST — see below
   const dupes = [];        // [[keptBarcode, skippedBarcode], ...] — see the collision note below
   const pIdxByNorm = {};   // normBarcode(barcode) -> index into base[] / the final row array
   if (pLast > 1) {
-    const v = ps.getRange(2, 1, pLast - 1, 12).getValues();
+    const v = ps.getRange(2, 1, pLast - 1, 16).getValues();   // A..P, widened for isSachet
     v.forEach(function (r) {
       const bc = String(r[0]); if (!bc) return;
       // Two Products rows whose barcodes normalise to the same key are the SAME physical
@@ -624,6 +698,9 @@ function buildAnalysis() {
         C1.idx(r[6]), C2.idx(r[7]), C3.idx(r[8]), r[11] === "YES" ? 1 : 0]);
       sizes.push([r[4] === "" || r[4] == null ? "" : r[4], r[5] || ""]);
       imgs.push(String(r[9] || "").replace(CDN_PREFIX, "~"));
+      // 0 = unknown/blank, 1 = YES, 2 = NO. Kept in memory here and concatenated last onto each
+      // `p` row below, alongside size/unit, so it never shifts an earlier index.
+      sachets.push(r[15] === "YES" ? 1 : (r[15] === "NO" ? 2 : 0));
     });
   }
 
@@ -696,9 +773,9 @@ function buildAnalysis() {
         pd = Math.round((1 - Math.min.apply(null, promos) / ref) * 1000) / 1000;
       }
     }
-    // size/unit go LAST so indices 0..12 keep their meaning for any page still running the
-    // previous build — it destructures the first 13 and ignores what follows.
-    return row.concat([ref, lo, hi, ns, pd, sizes[i][0], sizes[i][1]]);
+    // size/unit/sachet go LAST, in that order, so indices 0..12 keep their meaning for any page
+    // still running a previous build — it destructures the first 13 and ignores what follows.
+    return row.concat([ref, lo, hi, ns, pd, sizes[i][0], sizes[i][1], sachets[i]]);
   });
 
   // ---- o: latest price per (product, store, flag) — [pIdx, sIdx, price, flagIdx], flagIdx 0
@@ -1005,6 +1082,14 @@ function updateProduct(ss, d) {
     range.setValues([cur]);
   }
   if ("notes" in fields) ps.getRange(row, 14).setValue(fields.notes);
+  // is_sachet lives in column P, far from the contiguous B..J block above, so it is written on
+  // its own — same as notes (N). Only "YES"/"NO"/"" are accepted; anything else is ignored
+  // rather than written, so a client bug cannot put junk in the column. Present-key semantics
+  // are unchanged: absent leaves the cell alone, "" clears it back to unreviewed.
+  if ("is_sachet" in fields) {
+    const v = fields.is_sachet;
+    if (v === "YES" || v === "NO" || v === "") ps.getRange(row, SACHET_COL).setValue(v);
+  }
   if (d.clear_needs_info) ps.getRange(row, 12).setValue("");
 
   // Both caches must go: "lk:" or lookup keeps serving the pre-edit product for 6 hours, and
