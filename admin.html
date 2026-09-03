@@ -244,6 +244,37 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
   font-weight:700; font-size:15px}
 #tsSubmitBtn:disabled{opacity:.35; cursor:default}
 
+/* ---- ประเภทบรรจุภัณฑ์ (single-item, keyboard-first sachet/non-sachet tagging) ---- */
+.pk-head{display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap}
+.pk-progress{display:flex; gap:18px; flex-wrap:wrap; align-items:center; font-size:13px;
+  font-weight:700; color:var(--mut); margin-top:14px}
+.pk-pending{color:var(--amber)}
+.pk-legend{font-size:11.5px; color:var(--mut); font-weight:600; margin-top:8px; line-height:1.7}
+.pk-stage{display:flex; flex-direction:column; align-items:center; gap:16px; padding:26px 8px 10px; text-align:center}
+.pk-imgwrap{width:100%; display:flex; justify-content:center}
+.pk-img{max-width:min(78vw,520px); max-height:52vh; object-fit:contain; border-radius:var(--r);
+  border:1px solid var(--line); background:var(--paper)}
+.pk-img-ph{width:min(78vw,520px); height:280px; max-height:52vh; border-radius:var(--r);
+  border:1.5px dashed var(--line); background:var(--paper); display:flex; align-items:center;
+  justify-content:center; color:var(--mut); font-weight:600; font-size:13.5px}
+.pk-meta{display:flex; flex-direction:column; gap:4px; max-width:560px}
+.pk-brand{font-size:13px; font-weight:700; color:var(--mut); text-transform:uppercase; letter-spacing:.4px}
+.pk-item{font-size:19px; font-weight:800}
+.pk-sku{font-size:13.5px; color:var(--mut)}
+.pk-size{font-family:'IBM Plex Mono',monospace; font-size:20px; font-weight:700; color:var(--tag-deep)}
+.pk-hint{font-size:12.5px; font-weight:600; color:var(--amber); font-style:italic}
+.pk-actions{display:flex; gap:10px; flex-wrap:wrap; justify-content:center}
+.pk-btn{padding:14px 22px; border-radius:12px; font-weight:700; font-size:14.5px; border:1.5px solid var(--line)}
+.pk-yes{color:var(--ok)}
+.pk-yes.on, .pk-yes:hover{background:var(--ok-bg); border-color:var(--ok)}
+.pk-no{color:var(--warn)}
+.pk-no.on, .pk-no:hover{background:var(--warn-bg); border-color:var(--warn)}
+.pk-skip{color:var(--mut)}
+.pk-skip.on, .pk-skip:hover{background:var(--paper); border-color:var(--mut)}
+.pk-empty{padding:60px 20px; color:var(--mut); font-size:14px; display:flex; flex-direction:column;
+  gap:10px; align-items:center}
+.pk-empty-err{color:var(--warn); font-weight:600}
+
 @media (max-width:900px){
   .rv-layout{grid-template-columns:1fr}
   .ts-layout{grid-template-columns:1fr}
@@ -259,6 +290,7 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
     <button class="toptab" id="tabReview">เติมข้อมูลสินค้า</button>
     <button class="toptab" id="tabStores">จัดการร้าน</button>
     <button class="toptab" id="tabTunsong">ทุนส่ง</button>
+    <button class="toptab" id="tabSachet">ประเภทบรรจุภัณฑ์</button>
   </nav>
 </header>
 
@@ -491,6 +523,28 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
         </div>
       </div>
     </div>
+  </section>
+
+  <section id="sachetScreen" class="card hidden">
+    <div class="pk-head">
+      <div class="eyebrow" style="margin:0">ประเภทบรรจุภัณฑ์ — ซองหรือไม่ใช่ซอง</div>
+      <div class="field" style="min-width:200px">
+        <label class="eyebrow" for="pkCategorySelect" style="margin:0">หมวดหมู่</label>
+        <select class="tin" id="pkCategorySelect"><option value="">ทุกหมวดหมู่</option></select>
+      </div>
+    </div>
+    <div class="pk-progress">
+      <span id="pkRemaining">เหลือ 0 รายการ</span>
+      <span id="pkTagged">แท็กแล้ว 0 รายการ (เซสชันนี้)</span>
+      <span id="pkPending" class="pk-pending hidden">รอบันทึก 0</span>
+    </div>
+    <!-- Static, always on screen regardless of loading/empty/error state — the whole interface
+         is the keyboard, so the legend can never be something the user has to go find. -->
+    <div class="pk-legend">
+      <b>1</b> ซอง &nbsp;·&nbsp; <b>2</b> ไม่ใช่ซอง &nbsp;·&nbsp; <b>3</b> หรือ <b>S</b> ข้าม (ไม่บันทึก)
+      &nbsp;·&nbsp; <b>←</b> หรือ <b>Backspace</b> ย้อนกลับเพื่อแก้คำตอบก่อนหน้า
+    </div>
+    <div class="pk-stage" id="pkStage"></div>
   </section>
 
   <div class="modal-overlay hidden" id="storeModalOverlay">
@@ -1464,7 +1518,10 @@ const RV = {
   items: [],                          // [{barcode, brand, item, sku, size, unit, c1, c2, c3, img, first_seen}]
   vocab: { brands: [], tree: {} },
   filterText: '', selectedBarcode: null,
-  baseline: null                      // the values loaded for the selected product, to diff on save
+  baseline: null,                     // the values loaded for the selected product, to diff on save
+  pkgValue: ''                        // current segmented-button selection for is_sachet — a
+                                       // button, not an <input>, so it needs its own bit of state
+                                       // (same reason TS.confidence exists for ทุนส่ง's segmented control)
 };
 const REVIEW_NEEDSINFO_LIMIT = 300;   // server default/cap is also 300; kept explicit here for the "capped" check
 const REVIEW_REST_TEXT = 'หน้านี้แสดงรายการสินค้าที่บันทึกจากภาคสนามแล้วยังไม่มียี่ห้อ หมวดหมู่ หรือขนาด — กดปุ่มด้านล่างเพื่อค้นหารายการที่ต้องเติมข้อมูล (การค้นหาอาจใช้เวลาสักครู่เพราะต้องสแกนสินค้าทั้งหมดในระบบ)';
@@ -1565,6 +1622,7 @@ function loadFormFor(p){
     size: p.size != null ? String(p.size) : '', unit: p.unit || '',
     category_1: p.c1 || '', category_2: p.c2 || '', category_3: p.c3 || '',
     image_url: reviewImgSrc(p),
+    is_sachet: p.is_sachet || '',   // "YES" | "NO" | "" (not yet reviewed)
     notes: ''   // needsinfo does not return notes; an untouched field then sends nothing, so
                 // existing notes (invisible to this form) are never clobbered.
   };
@@ -1646,6 +1704,14 @@ function reviewFormHtml(p){
       </div>
     </div>
     <div class="rv-field">
+      <span class="eyebrow">บรรจุภัณฑ์</span>
+      <div class="segmented" id="rvPackaging">
+        <button type="button" data-pkg="YES"${b.is_sachet === 'YES' ? ' class="on"' : ''}>ซอง</button>
+        <button type="button" data-pkg="NO"${b.is_sachet === 'NO' ? ' class="on"' : ''}>ไม่ใช่ซอง</button>
+        <button type="button" data-pkg=""${b.is_sachet ? '' : ' class="on"'}>ยังไม่ระบุ</button>
+      </div>
+    </div>
+    <div class="rv-field">
       <label class="eyebrow" for="rvImgUrl">รูปภาพ</label>
       <div class="rv-imgrow">
         <input type="text" class="tin" id="rvImgUrl" placeholder="วางลิงก์รูปภาพ…" value="${esc(b.image_url)}">
@@ -1670,6 +1736,7 @@ function reviewFormHtml(p){
 function renderReviewForm(p){
   $('reviewFormWrap').innerHTML = reviewFormHtml(p);
   if (!p) return;
+  RV.pkgValue = RV.baseline.is_sachet || '';
   populateCategorySelects(RV.baseline.category_1, RV.baseline.category_2, RV.baseline.category_3);
   const brandInp = $('rvBrand');
   if (brandInp) brandInp.focus();   // ready to keep typing without touching the mouse
@@ -1768,7 +1835,8 @@ function collectReviewFields(){
     brand: $('rvBrand').value.trim(), item: $('rvItem').value.trim(),
     sku: $('rvSku').value.trim(), size: $('rvSize').value.trim(), unit: $('rvUnit').value.trim(),
     category_1: $('rvC1').value, category_2: $('rvC2').value, category_3: $('rvC3').value,
-    image_url: $('rvImgUrl').value.trim(), notes: $('rvNotes').value.trim()
+    image_url: $('rvImgUrl').value.trim(), notes: $('rvNotes').value.trim(),
+    is_sachet: RV.pkgValue || ''
   };
   const fields = {};
   Object.keys(cur).forEach(k => { if (cur[k] !== (RV.baseline[k] || '')) fields[k] = cur[k]; });
@@ -2202,6 +2270,242 @@ function ensureTunsongListLoaded(){
   fetchTunsongList();
 }
 
+/* ================= ประเภทบรรจุภัณฑ์ (sachet / not-sachet tagging) =================
+   One product, full attention, keyboard only — ~15,000 products need this, so pace is the whole
+   design goal. `seen` is the ordered list of products already shown this session (so Backspace/←
+   can step back and let an answer change); `pageQueue` is fetched-but-not-yet-shown stock; `pos`
+   is the index into `seen` the admin is currently looking at. Advancing past the end of `seen`
+   dequeues from `pageQueue` (fetching more in the background well before it runs dry), and going
+   back never mutates either array — it only moves `pos`. */
+const PK = {
+  filterC1: '', categories: [], vocabLoaded: false, vocabLoading: false,
+  seen: [], pageQueue: [], pos: 0,
+  cdn: '', remaining: 0, fetching: false, exhausted: false, fetchCooldown: false, loadError: '',
+  pending: new Map(),        // barcode -> "YES" | "NO" — decided but not yet flushed to the server
+  sessionTagged: new Set(),  // barcodes given a real YES/NO at least once this session (for the progress line)
+  started: false
+};
+const PK_LS_KEY = 'ps_admin_pk_pending';
+const PK_PAGE_LIMIT = 100;
+const PK_LOW_WATER = 20;     // fetch the next page once the buffer drops below this, well before empty
+const PK_FLUSH_COUNT = 15;
+const PK_IDLE_MS = 5000;
+
+/* ---- vocab (category filter) ---- */
+async function loadPkVocab(){
+  if (PK.vocabLoaded || PK.vocabLoading) return;
+  PK.vocabLoading = true;
+  const d = await api('?action=vocab');
+  PK.vocabLoading = false;
+  if (!d.ok || !d.tree) { toast(backendMsg(d, 'โหลดหมวดหมู่ไม่สำเร็จ'), true); return; }
+  PK.vocabLoaded = true;
+  PK.categories = Object.keys(d.tree);
+  renderPkCategorySelect();
+}
+function renderPkCategorySelect(){
+  const sel = $('pkCategorySelect'); if (!sel) return;
+  const cur = PK.filterC1;
+  sel.innerHTML = '<option value="">ทุกหมวดหมู่</option>' +
+    PK.categories.map(c => `<option value="${esc(c)}"${c === cur ? ' selected' : ''}>${esc(c)}</option>`).join('');
+}
+
+/** Changing the category scopes a fresh session — the buffered queue so far belonged to the old
+ *  filter, so it is dropped, but decisions already made (PK.pending) are untouched: they still
+ *  need writing regardless of what the admin looks at next. */
+function changePkCategory(newC1){
+  if (newC1 === PK.filterC1) return;
+  PK.filterC1 = newC1;
+  PK.seen = []; PK.pageQueue = []; PK.pos = 0;
+  PK.exhausted = false; PK.fetchCooldown = false; PK.loadError = '';
+  if (PK.pending.size) flushPkPending();   // best-effort — does not block the reload on it
+  ensureCurrentItem();
+  renderSachet();
+}
+
+/* ---- queue fetch ---- */
+async function fetchPkPage(){
+  if (PK.fetching || PK.exhausted) return;
+  PK.fetching = true;
+  const qs = `?action=sachetqueue&limit=${PK_PAGE_LIMIT}` +
+    (PK.filterC1 ? `&c1=${encodeURIComponent(PK.filterC1)}` : '');
+  const d = await api(qs);
+  PK.fetching = false;
+  if (!d.ok || !Array.isArray(d.p)) {
+    PK.loadError = backendMsg(d, 'โหลดคิวไม่สำเร็จ');
+    renderSachet();
+    return;
+  }
+  PK.loadError = '';
+  if (typeof d.cdn === 'string') PK.cdn = d.cdn;
+  if (typeof d.remaining === 'number') PK.remaining = d.remaining;
+  if (!d.p.length) { PK.exhausted = true; ensureCurrentItem(); renderSachet(); return; }
+  // Drop anything already on screen, already queued, or already decided-but-not-yet-flushed —
+  // the server keeps handing back a pending item until the flush that clears it lands, and
+  // re-adding it here would show the very same product a second time.
+  const known = new Set([...PK.seen.map(x => x.barcode), ...PK.pageQueue.map(x => x.barcode)]);
+  const fresh = d.p.filter(x => !known.has(x.barcode) && !PK.pending.has(x.barcode));
+  if (fresh.length) {
+    PK.pageQueue.push(...fresh.map(x => ({ ...x, decision: null })));
+  } else {
+    // Everything just returned is already accounted for locally (most likely still pending a
+    // flush) — cool down instead of hammering the endpoint on every check.
+    PK.fetchCooldown = true;
+    setTimeout(() => { PK.fetchCooldown = false; }, 3000);
+  }
+  ensureCurrentItem();
+  renderSachet();
+}
+
+function maybeFetchMore(){
+  if (PK.pageQueue.length >= PK_LOW_WATER) return;
+  if (PK.fetching || PK.exhausted || PK.fetchCooldown) return;
+  fetchPkPage();
+}
+
+/** Makes sure `PK.seen[PK.pos]` exists whenever possible (dequeuing from `pageQueue`), and always
+ *  tops up the background buffer regardless of where `pos` currently points. */
+function ensureCurrentItem(){
+  if (PK.pos < PK.seen.length) { maybeFetchMore(); return; }
+  if (PK.pageQueue.length) PK.seen.push(PK.pageQueue.shift());
+  maybeFetchMore();
+}
+
+function ensurePkLoaded(){
+  loadPkVocab();
+  if (!PK.started) {
+    PK.started = true;
+    ensureCurrentItem();
+  }
+  renderSachet();
+}
+
+/* ---- decisions ---- */
+function goBackSachet(){
+  if (PK.pos <= 0) return;
+  PK.pos--;
+  renderSachet();
+}
+
+/** '1'/'2'/'3'-or-'s' and their on-screen button equivalents all land here. Keyed by barcode in
+ *  PK.pending, so going back and picking a different answer for the same product UPDATES that
+ *  one entry rather than queueing a second, contradictory one — and picking "skip" after an
+ *  earlier real answer un-queues it, same as never having answered. */
+function recordDecision(value){
+  const item = PK.seen[PK.pos];
+  if (!item) return;
+  item.decision = value;
+  if (value === 'YES' || value === 'NO') {
+    PK.pending.set(item.barcode, value);
+    PK.sessionTagged.add(item.barcode);
+  } else {
+    PK.pending.delete(item.barcode);
+    PK.sessionTagged.delete(item.barcode);
+  }
+  savePkPending();
+  if (PK.pending.size >= PK_FLUSH_COUNT) flushPkPending();
+  else schedulePkIdleFlush();
+  PK.pos++;
+  ensureCurrentItem();
+  renderSachet();
+}
+
+/* ---- persistence + flush ----
+   Never a POST per keypress — a 2s+ round trip would destroy the whole point of this screen.
+   Decisions pile up in PK.pending and go out as ONE batch every ~15 of them, 5s after the admin
+   goes idle, when the tab is left, or when the page is hidden — and are mirrored into
+   localStorage on every change so closing the tab mid-session cannot lose them; a leftover batch
+   from a previous session is flushed again on the next page load (see init()). */
+let pkFlushTimer = null;
+let pkFlushing = false;
+
+function savePkPending(){ ls.set(PK_LS_KEY, [...PK.pending.entries()]); }
+function loadPkPending(){
+  const arr = ls.get(PK_LS_KEY, []);
+  if (!Array.isArray(arr)) return;
+  arr.forEach(row => {
+    const barcode = row && row[0], value = row && row[1];
+    if (barcode && (value === 'YES' || value === 'NO')) PK.pending.set(barcode, value);
+  });
+}
+function schedulePkIdleFlush(){
+  clearTimeout(pkFlushTimer);
+  pkFlushTimer = setTimeout(flushPkPending, PK_IDLE_MS);
+}
+
+/** Fires the accumulated is_sachet decisions as ONE batch POST. updateProduct is naturally
+ *  idempotent — writing is_sachet to the same value twice just sets the same cell twice — so
+ *  keeping a decision pending and resending it on the next flush trigger is always safe, whether
+ *  or not an earlier attempt actually landed. Nothing is ever dropped from PK.pending except on
+ *  an explicit server confirmation. */
+async function flushPkPending(){
+  if (pkFlushing || !PK.pending.size) return;
+  pkFlushing = true;
+  const entries = [...PK.pending.entries()];
+  const items = entries.map(([barcode, value]) => ({ type: 'updateProduct', barcode, fields: { is_sachet: value } }));
+  const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ type: 'batch', items }) }, 20000);
+  pkFlushing = false;
+  if (d.ok && Array.isArray(d.results)) {
+    const confirmed = new Set(d.results.filter(r => r.status && r.status !== 'error' && r.status !== 'failed').map(r => r.id));
+    entries.forEach(([barcode]) => { if (confirmed.has(barcode)) PK.pending.delete(barcode); });
+  }
+  // Anything left in PK.pending (network failure, or simply missing from `results`) stays put
+  // for the next trigger to retry — see the idempotency note above.
+  savePkPending();
+  renderPkPendingIndicator();
+}
+
+function renderPkPendingIndicator(){
+  const el = $('pkPending'); if (!el) return;
+  el.textContent = `รอบันทึก ${PK.pending.size}`;
+  el.classList.toggle('hidden', !PK.pending.size);
+}
+
+/* ---- render ---- */
+function pkStageHtml(){
+  if (PK.loadError) {
+    return `<div class="pk-empty pk-empty-err">${esc(PK.loadError)}
+      <button type="button" class="linkbtn" id="pkRetryBtn">ลองใหม่</button></div>`;
+  }
+  const item = PK.seen[PK.pos];
+  if (!item) {
+    return PK.exhausted
+      ? `<div class="pk-empty">ไม่มีรายการที่ต้องแท็กแล้ว — ครบทุกรายการในหมวดนี้</div>`
+      : `<div class="pk-empty"><span class="rv-spinner" aria-hidden="true"></span>กำลังโหลด…</div>`;
+  }
+  const src = item.img ? item.img.replace('~', PK.cdn || '') : '';
+  const imgHtml = src ? `<img class="pk-img" src="${esc(src)}" alt="">` : `<div class="pk-img-ph">ไม่มีรูป</div>`;
+  const sizeUnit = [item.size, item.unit].filter(Boolean).join(' ');
+  // The hint is a heuristic guess, never an answer — styled distinctly and never reflected in
+  // which button (if any) starts selected (see the `dec` / btnOn below).
+  const hintHtml = item.hint === 'sachet'
+    ? `<div class="pk-hint">น่าจะเป็นซอง (ขนาดเล็ก) — เป็นเพียงข้อสังเกต ไม่ใช่คำตอบ</div>` : '';
+  const dec = item.decision;
+  const btnOn = v => dec === v ? ' on' : '';
+  return `
+    <div class="pk-imgwrap">${imgHtml}</div>
+    <div class="pk-meta">
+      <div class="pk-brand">${esc(item.brand || '—')}</div>
+      <div class="pk-item">${esc(item.item || '(ไม่มีชื่อ)')}</div>
+      ${item.sku ? `<div class="pk-sku">${esc(item.sku)}</div>` : ''}
+      <div class="pk-size">${esc(sizeUnit || '—')}</div>
+      ${hintHtml}
+    </div>
+    <div class="pk-actions">
+      <button type="button" class="pk-btn pk-yes${btnOn('YES')}" data-pk="YES">1 · ซอง</button>
+      <button type="button" class="pk-btn pk-no${btnOn('NO')}" data-pk="NO">2 · ไม่ใช่ซอง</button>
+      <button type="button" class="pk-btn pk-skip${btnOn('SKIP')}" data-pk="SKIP">3 / S · ข้าม</button>
+    </div>
+  `;
+}
+
+function renderSachet(){
+  $('pkRemaining').textContent = `เหลือ ${PK.remaining} รายการ`;
+  $('pkTagged').textContent = `แท็กแล้ว ${PK.sessionTagged.size} รายการ (เซสชันนี้)`;
+  renderPkPendingIndicator();
+  $('pkStage').innerHTML = pkStageHtml();
+}
+
 /* ================= MODE / TABS ================= */
 function setMode(mode, persist = true){
   S.mode = mode;
@@ -2214,15 +2518,23 @@ function setMode(mode, persist = true){
   if (persist) saveDraft();
 }
 
+let currentScreen = 'entry';
 function showScreen(which){
+  // Leaving ประเภทบรรจุภัณฑ์ is one of the flush triggers — looking away should never leave a
+  // pile of tagged-but-unsaved decisions sitting only in memory (they are also in localStorage,
+  // but the whole point of the count-based/idle flush is to not depend on that as the only net).
+  if (currentScreen === 'sachet' && which !== 'sachet' && PK.pending.size) flushPkPending();
+  currentScreen = which;
   $('entryScreen').classList.toggle('hidden', which !== 'entry');
   $('reviewScreen').classList.toggle('hidden', which !== 'review');
   $('storesScreen').classList.toggle('hidden', which !== 'stores');
   $('tunsongScreen').classList.toggle('hidden', which !== 'tunsong');
+  $('sachetScreen').classList.toggle('hidden', which !== 'sachet');
   $('tabEntry').classList.toggle('on', which === 'entry');
   $('tabReview').classList.toggle('on', which === 'review');
   $('tabStores').classList.toggle('on', which === 'stores');
   $('tabTunsong').classList.toggle('on', which === 'tunsong');
+  $('tabSachet').classList.toggle('on', which === 'sachet');
 }
 
 /* ================= WIRING ================= */
@@ -2380,6 +2692,35 @@ $('tabEntry').addEventListener('click', () => showScreen('entry'));
 $('tabReview').addEventListener('click', () => showScreen('review'));
 $('tabStores').addEventListener('click', () => { showScreen('stores'); ensureStoresLoaded(); });
 $('tabTunsong').addEventListener('click', () => { showScreen('tunsong'); ensureTunsongListLoaded(); });
+$('tabSachet').addEventListener('click', () => { showScreen('sachet'); ensurePkLoaded(); });
+
+/* ---- ประเภทบรรจุภัณฑ์ tab wiring ---- */
+$('pkCategorySelect').addEventListener('change', () => changePkCategory($('pkCategorySelect').value));
+// One delegated handler covers both the on-screen buttons and the retry link — same code path
+// the keyboard shortcuts use (see the global keydown listener below), per spec.
+$('pkStage').addEventListener('click', e => {
+  const btn = e.target.closest('[data-pk]');
+  if (btn) { recordDecision(btn.dataset.pk); return; }
+  if (e.target.id === 'pkRetryBtn') { PK.loadError = ''; ensureCurrentItem(); renderSachet(); }
+});
+// The whole ประเภทบรรจุภัณฑ์ interface IS the keyboard, but this listener is global (document),
+// so it must (a) only act while that tab is showing and (b) never swallow 1/2/3 while the admin
+// is typing in one of the other four tabs' many text fields — hence the currentScreen guard and
+// the input/textarea/select check, in that order, before anything else runs.
+document.addEventListener('keydown', e => {
+  if (currentScreen !== 'sachet') return;
+  const tag = e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (e.key === '1') { e.preventDefault(); recordDecision('YES'); }
+  else if (e.key === '2') { e.preventDefault(); recordDecision('NO'); }
+  else if (e.key === '3' || e.key === 's' || e.key === 'S') { e.preventDefault(); recordDecision('SKIP'); }
+  else if (e.key === 'ArrowLeft' || e.key === 'Backspace') { e.preventDefault(); goBackSachet(); }
+});
+// A backgrounded/closed tab is exactly the moment an in-flight batch is most at risk of never
+// firing — flush whatever is pending the instant the page is hidden, not just on the idle timer.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && PK.pending.size) flushPkPending();
+});
 
 /* ---- review tab wiring ---- */
 $('reviewFetchBtn').addEventListener('click', fetchReviewQueue);
@@ -2409,6 +2750,16 @@ $('reviewFormWrap').addEventListener('change', e => {
 $('reviewFormWrap').addEventListener('click', e => {
   if (e.target.id === 'rvSaveBtn') saveReview();
   else if (e.target.id === 'rvSkipBtn') skipReview();
+  else {
+    const pkgBtn = e.target.closest('[data-pkg]');
+    // Direct DOM toggle, not a full form re-render — re-rendering here would rebuild every
+    // input in the form (see reviewFormHtml) and drop whatever the admin was mid-typing.
+    if (pkgBtn) {
+      RV.pkgValue = pkgBtn.dataset.pkg;   // '' | 'YES' | 'NO'
+      pkgBtn.closest('.segmented').querySelectorAll('button')
+        .forEach(b => b.classList.toggle('on', b === pkgBtn));
+    }
+  }
 });
 $('reviewFormWrap').addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -2507,6 +2858,10 @@ function init(){
   renderSummary();
   showScreen('entry');
   refreshStores();
+  // A previous session's unflushed ประเภทบรรจุภัณฑ์ decisions must go out even if the admin
+  // never reopens that tab this time — closing the browser is not permission to lose them.
+  loadPkPending();
+  if (PK.pending.size) flushPkPending();
   if (S.mode === 'barcode') { const ids = allRowIds(); if (ids.length) focusCell(ids[0], 'barcode'); }
   else { const ids = allSelRowIds(); if (ids.length) focusSelCell(ids[0], 'brand'); }
 }
