@@ -652,7 +652,7 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
 <div id="toast"></div>
 
 <script type="module">
-import { makeId, normBarcode, priceValue, buildObs, rankStores, isValidBarcode, fuzzyScore } from "./core.js";
+import { makeId, normBarcode, priceValue, buildObs, rankStores, isValidBarcode, fuzzyScore, backupImageUrl } from "./core.js";
 
 /* ================= CONFIG ================= */
 const API_URL = "https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q-A3R6Fp45V42sBslG1AhZfQ_S3RyQGOg1Zp5toMgQtyaGg/exec";
@@ -1669,7 +1669,7 @@ function renderReviewList(){
   }
   wrap.innerHTML = items.map(p => {
     const src = reviewImgSrc(p);
-    const thumb = src ? `<img class="rv-thumb" src="${esc(src)}" alt="">` : `<div class="rv-thumb-ph"></div>`;
+    const thumb = src ? `<img class="rv-thumb" src="${esc(src)}" alt="" data-bc="${esc(p.barcode)}">` : `<div class="rv-thumb-ph"></div>`;
     const label = esc((p.item || '').trim() || '(ไม่มีชื่อ)');
     return `<button type="button" class="rv-row${p.barcode === RV.selectedBarcode ? ' on' : ''}"
         data-barcode="${esc(p.barcode)}">
@@ -1839,6 +1839,8 @@ function renderBrandDrop(){
   box.classList.toggle('hidden', !hits.length);
 }
 
+// Deliberately never gets data-bc: this preview is how the admin checks that the URL in the
+// field actually works, so a broken URL must look broken rather than quietly show the backup.
 function updateImgPreview(src){
   const wrap = $('rvPreviewWrap'), img = $('rvPreview');
   if (!wrap || !img) return;
@@ -2548,7 +2550,7 @@ function pkStageHtml(){
       : `<div class="pk-empty"><span class="rv-spinner" aria-hidden="true"></span>กำลังโหลด…</div>`;
   }
   const src = item.img ? item.img.replace('~', PK.cdn || '') : '';
-  const imgHtml = src ? `<img class="pk-img" src="${esc(src)}" alt="">` : `<div class="pk-img-ph">ไม่มีรูป</div>`;
+  const imgHtml = src ? `<img class="pk-img" src="${esc(src)}" alt="" data-bc="${esc(item.barcode)}">` : `<div class="pk-img-ph">ไม่มีรูป</div>`;
   const sizeUnit = [item.size, item.unit].filter(Boolean).join(' ');
   // The hint is a heuristic guess, never an answer — styled distinctly and never reflected in
   // which button (if any) starts selected (see the `dec` / btnOn below).
@@ -2696,7 +2698,7 @@ function pkBulkSelectNone(){
 
 function pkBulkCardHtml(item){
   const src = item.img ? item.img.replace('~', PKB.cdn || '') : '';
-  const thumb = src ? `<img class="pkb-thumb" src="${esc(src)}" alt="" loading="lazy">` : `<div class="pkb-thumb-ph">ไม่มีรูป</div>`;
+  const thumb = src ? `<img class="pkb-thumb" src="${esc(src)}" alt="" loading="lazy" data-bc="${esc(item.barcode)}">` : `<div class="pkb-thumb-ph">ไม่มีรูป</div>`;
   const sizeUnit = [item.size, item.unit].filter(Boolean).join(' ');
   const hint = item.hint === 'sachet' ? `<div class="pkb-hint">น่าจะเป็นซอง</div>` : '';
   const on = PKB.selected.has(item.barcode) ? ' on' : '';
@@ -3143,6 +3145,24 @@ $('storeModalOverlay').addEventListener('click', e => {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !$('storeModalOverlay').classList.contains('hidden')) closeStoreModal();
 });
+
+/* ================= IMAGE FALLBACK =================
+   `error` does not bubble, so this has to be a capture listener on document to see every
+   product <img> (data-bc marks one) as it fails. First failure: retry once against the backup
+   mirror. Second failure (or no backup for this barcode): stopPropagation() is NOT called, so
+   whatever this image already does on error (nothing, for most of these thumbnails — the
+   broken-image icon shows, same as before this feature existed) still happens exactly as before. */
+document.addEventListener('error', e => {
+  const im = e.target;
+  if (!(im instanceof HTMLImageElement) || !im.dataset.bc) return;
+  if (im.dataset.fb) return;                        // already tried the backup once
+  const backup = backupImageUrl(im.dataset.bc);
+  if (!backup || im.src === backup) return;
+  im.dataset.fb = '1';
+  im.src = backup;
+  e.stopPropagation();
+}, true);
+
 /* ---- ทุนส่ง tab wiring ---- */
 $('tsProductInput').addEventListener('input', onTsProductInput);
 $('tsProductInput').addEventListener('focus', () => { if (TS.productResults.length) renderTsProductDrop(false); });

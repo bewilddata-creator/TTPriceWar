@@ -425,7 +425,7 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
 <script type="module">
 import { makeId, normBarcode, priceKey, priceValue, buildObs, shouldAcceptScan, rankStores,
          outboxAdd, outboxUndo, outboxDue, outboxMark, outboxRemove,
-         outboxPending, UNDO_MS, fuzzyScore } from "./core.js";
+         outboxPending, UNDO_MS, fuzzyScore, backupImageUrl } from "./core.js";
 
 /* ================= CONFIG ================= */
 const API_URL = "https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q-A3R6Fp45V42sBslG1AhZfQ_S3RyQGOg1Zp5toMgQtyaGg/exec";
@@ -650,7 +650,9 @@ function showHit(res){
   $('hitSize').textContent = [p.size, p.unit].filter(Boolean).join(' ');
   const img = p.img ? p.img.replace('~', res.cdn || '') : '';
   const el = $('hitImg');
-  if (img) { el.src = img; el.style.visibility = 'visible'; } else { el.style.visibility = 'hidden'; }
+  delete el.dataset.fb;                             // reused element — clear any earlier retry flag
+  if (img) { el.dataset.bc = p.barcode; el.src = img; el.style.visibility = 'visible'; }
+  else { delete el.dataset.bc; el.style.visibility = 'hidden'; }
 }
 
 function showMiss(code){
@@ -1031,7 +1033,9 @@ async function qLookup(code){
   $('qSize').textContent = [p.size, p.unit].filter(Boolean).join(' ');
   const img = p.img ? p.img.replace('~', res.cdn || '') : '';
   const el = $('qImg');
-  if (img) { el.src = img; el.style.visibility = 'visible'; } else { el.style.visibility = 'hidden'; }
+  delete el.dataset.fb;                             // reused element — clear any earlier retry flag
+  if (img) { el.dataset.bc = p.barcode; el.src = img; el.style.visibility = 'visible'; }
+  else { delete el.dataset.bc; el.style.visibility = 'hidden'; }
 
   const prices = list || [];
   if (!prices.length) {
@@ -1103,7 +1107,7 @@ function renderLog(){
     const amtTxt = (r.flag === 'wholesale' && r.minQty)
       ? `${esc(fmtPrice(r.price))} · ขั้นต่ำ ${esc(r.minQty)}` : esc(fmtPrice(r.price));
     return `<div class="logcard ${esc(r.flag)}">
-      ${r.img ? `<img src="${esc(r.img)}" alt="" onerror="this.style.visibility='hidden'">` : ''}
+      ${r.img ? `<img src="${esc(r.img)}" alt="" data-bc="${esc(r.barcode)}" onerror="this.style.visibility='hidden'">` : ''}
       <div class="mid">
         <div class="nm">${esc(r.name)}</div>
         <div class="sub">${esc(hhmm(r.at))} · ${esc(r.store || '')} · ${esc(r.barcode)}</div>
@@ -1203,6 +1207,23 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Backspace') key('back');
   else if (e.key === 'Enter' && priceValue(S.price) !== null) saveObservation();
 });
+
+/* ================= IMAGE FALLBACK =================
+   `error` does not bubble, so this has to be a capture listener on document to see every
+   product <img> (data-bc marks one) as it fails. First failure: retry once against the backup
+   mirror. Second failure (or no backup for this barcode): stopPropagation() is NOT called, so
+   the img's own existing onerror (hide it) still runs exactly as before. */
+document.addEventListener('error', e => {
+  const im = e.target;
+  if (!(im instanceof HTMLImageElement) || !im.dataset.bc) return;
+  if (im.dataset.fb) return;                        // already tried the backup once
+  const backup = backupImageUrl(im.dataset.bc);
+  if (!backup || im.src === backup) return;
+  im.dataset.fb = '1';
+  im.src = backup;
+  e.stopPropagation();
+}, true);
+
 $('tabSearch').addEventListener('click', () => showTab('search'));
 $('tabLog').addEventListener('click', () => showTab('log'));
 $('qCode').addEventListener('input', onQCodeInput);

@@ -38,6 +38,18 @@ export function normBarcode(code) {
   return String(code).replace(/\D/g, "").replace(/^0+/, "") || "0";
 }
 
+/** Where backup product photos live, mirrored out-of-band for barcodes whose original URL
+ *  (a store's own CDN) is hotlink-blocked or has gone down. Keyed by normBarcode, not every
+ *  barcode has one yet. */
+export const IMG_BACKUP_BASE = "https://bewilddata-creator.github.io/TTPriceWar-images/img/";
+
+/** The backup photo URL for `barcode`, or "" when there is no real barcode to key it by —
+ *  callers must not attempt a backup fetch for a product that never had an original image URL. */
+export function backupImageUrl(barcode) {
+  const norm = normBarcode(barcode);
+  return norm === "0" ? "" : IMG_BACKUP_BASE + norm + ".jpg";
+}
+
 export const SCAN_WINDOW_MS = 2500;
 
 /** A barcode lingering in the viewfinder must not create a second row. */

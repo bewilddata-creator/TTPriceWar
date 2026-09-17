@@ -1,0 +1,12 @@
+{
+  "name": "ttpricewar-tools",
+  "private": true,
+  "type": "module",
+  "description": "Local maintenance scripts — not part of the website",
+  "scripts": {
+    "backup-images": "node backup-images.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

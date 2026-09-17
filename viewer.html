@@ -431,7 +431,7 @@ footer button:disabled{opacity:.5; cursor:default}
 </footer>
 
 <script type="module">
-import { normBarcode } from "./core.js";
+import { normBarcode, backupImageUrl } from "./core.js";
 
 /* ================= CONFIG ================= */
 const API_URL = "https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q-A3R6Fp45V42sBslG1AhZfQ_S3RyQGOg1Zp5toMgQtyaGg/exec";   // ← Web app URL เดียวกับหน้าเก็บราคา (…/exec)
@@ -929,7 +929,7 @@ function renderSearch(q){
   $("results").innerHTML = res.slice(0,60).map(p=>`
     <div class="pcard" data-bc="${esc(p.bc)}">
       <div class="body">
-        ${p.img ? `<div class="thumb"><img class="thumb-img" alt="" src="${esc(p.img)}"></div>` : ''}
+        ${p.img ? `<div class="thumb"><img class="thumb-img" alt="" src="${esc(p.img)}" data-bc="${esc(p.bc)}"></div>` : ''}
         <div class="info">
           <div class="brand">${esc(p.brand)||'&nbsp;'}</div>
           <div class="nm">${esc(p.item)||esc(p.bc)}</div>
@@ -982,6 +982,8 @@ function renderDetailImage(p){
   $("dNoimg").classList.remove('hidden'); $("dNoimg").textContent = '?';
   if(!p.img) return;
   const im = $("dImg");
+  delete im.dataset.fb;                             // reused element — clear any earlier retry flag
+  im.dataset.bc = p.bc;
   im.addEventListener('load', () => { im.classList.remove('hidden'); $("dNoimg").classList.add('hidden'); }, { once:true });
   im.addEventListener('error', () => { im.classList.add('hidden'); $("dNoimg").classList.remove('hidden'); }, { once:true });
   im.src = p.img;
@@ -1430,7 +1432,7 @@ function sortBrandModalRows(arr){
 function brandModalRowHtml(p){
   const range = (!p.lo && !p.hi) ? '—' : (p.lo===p.hi ? fmt(p.lo) : `${fmt(p.lo)}–${fmt(p.hi)}`);
   return `<tr class="rowbtn" data-bc="${esc(p.bc)}">
-    <td>${p.img ? `<div class="bm-thumb"><img class="bm-thumb-img" alt="" src="${esc(p.img)}"></div>` : ''}</td>
+    <td>${p.img ? `<div class="bm-thumb"><img class="bm-thumb-img" alt="" src="${esc(p.img)}" data-bc="${esc(p.bc)}"></div>` : ''}</td>
     <td>
       <div class="bm-line-mut">${esc(p.brand)||'&nbsp;'}</div>
       <div class="bm-item">${esc(p.item)||esc(p.bc)}</div>
@@ -1720,7 +1722,7 @@ function renderCmpSide(side){
   searchWrap.classList.add('hidden');
   picked.classList.remove('hidden');
   const img = p.img
-    ? `<div class="cmp-imgwrap"><img alt="" src="${esc(p.img)}"></div>`
+    ? `<div class="cmp-imgwrap"><img alt="" src="${esc(p.img)}" data-bc="${esc(p.bc)}"></div>`
     : `<div class="cmp-imgwrap"><div class="noimg">?</div></div>`;
   const catPath = [p.c1,p.c2,p.c3].filter(Boolean).join(' › ');
   const sizeUnit = [p.size,p.unit].filter(Boolean).join(' ');
@@ -1931,6 +1933,24 @@ function initEvents(){
 
   $("loading").addEventListener('click', e=>{ if(e.target.closest('#retryBtn')) boot(); });
 }
+
+/* ================= IMAGE FALLBACK =================
+   `error` does not bubble, so this has to be a capture listener on document to see every
+   product <img> (data-bc marks one) as it fails. First failure: retry once against the backup
+   mirror. Second failure (or no backup for this barcode): stopPropagation() is NOT called, so
+   whatever this image already does on error (drop the thumb, show the '?' placeholder, or —
+   for the brand-modal/เทียบสินค้า thumbs, which have none — nothing) still happens exactly as
+   before this feature existed. */
+document.addEventListener('error', e => {
+  const im = e.target;
+  if (!(im instanceof HTMLImageElement) || !im.dataset.bc) return;
+  if (im.dataset.fb) return;                        // already tried the backup once
+  const backup = backupImageUrl(im.dataset.bc);
+  if (!backup || im.src === backup) return;
+  im.dataset.fb = '1';
+  im.src = backup;
+  e.stopPropagation();
+}, true);
 
 initEvents();
 if ('serviceWorker' in navigator) {
