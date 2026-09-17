@@ -147,6 +147,18 @@ async function fetchViaBrowser(chromium, url) {
     if (res && res.ok() && looksLikeImage(buf)) return { buf };
     return { error: `browser: HTTP ${res ? res.status() : "no response"}` };
   } catch (e) {
+    // A real image served as application/octet-stream makes Chrome download it instead of
+    // displaying it, and goto() throws. Fetch it through the same browser session instead.
+    if (e.message.includes("Download is starting")) {
+      try {
+        const res = await visible.page.request.get(url, { timeout: 30000 });
+        const buf = await res.body();
+        if (res.ok() && looksLikeImage(buf)) return { buf };
+        return { error: `browser download: HTTP ${res.status()}` };
+      } catch (e2) {
+        return { error: `browser download: ${e2.message.split("\n")[0]}` };
+      }
+    }
     return { error: `browser: ${e.message.split("\n")[0]}` };
   }
 }
