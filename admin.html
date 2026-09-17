@@ -1668,8 +1668,15 @@ function renderReviewList(){
     return;
   }
   wrap.innerHTML = items.map(p => {
-    const src = reviewImgSrc(p);
-    const thumb = src ? `<img class="rv-thumb" src="${esc(src)}" alt="" data-bc="${esc(p.barcode)}">` : `<div class="rv-thumb-ph"></div>`;
+    // Backup mirror first, keyed only by barcode — the ORIGINAL url (reviewImgSrc()) is known
+    // right here at render time (unlike viewer.html, where it can arrive later), so it's stashed
+    // on data-orig for the capture-phase 'error' listener near the end of this file to fall back
+    // to if the backup ever fails, rather than looked up again from anywhere.
+    const orig = reviewImgSrc(p);
+    const backup = backupImageUrl(p.barcode);
+    const thumb = backup
+      ? `<img class="rv-thumb" src="${esc(backup)}" alt="" data-bc="${esc(p.barcode)}" data-orig="${esc(orig)}">`
+      : `<div class="rv-thumb-ph"></div>`;
     const label = esc((p.item || '').trim() || '(ไม่มีชื่อ)');
     return `<button type="button" class="rv-row${p.barcode === RV.selectedBarcode ? ' on' : ''}"
         data-barcode="${esc(p.barcode)}">
@@ -2549,8 +2556,13 @@ function pkStageHtml(){
       ? `<div class="pk-empty">ไม่มีรายการที่ต้องแท็กแล้ว — ครบทุกรายการในหมวดนี้</div>`
       : `<div class="pk-empty"><span class="rv-spinner" aria-hidden="true"></span>กำลังโหลด…</div>`;
   }
-  const src = item.img ? item.img.replace('~', PK.cdn || '') : '';
-  const imgHtml = src ? `<img class="pk-img" src="${esc(src)}" alt="" data-bc="${esc(item.barcode)}">` : `<div class="pk-img-ph">ไม่มีรูป</div>`;
+  // Backup mirror first (see the review list's comment above reviewImgSrc()'s call site) — the
+  // original is stashed on data-orig for the capture-phase 'error' listener's fallback.
+  const orig = item.img ? item.img.replace('~', PK.cdn || '') : '';
+  const backup = backupImageUrl(item.barcode);
+  const imgHtml = backup
+    ? `<img class="pk-img" src="${esc(backup)}" alt="" data-bc="${esc(item.barcode)}" data-orig="${esc(orig)}">`
+    : `<div class="pk-img-ph">ไม่มีรูป</div>`;
   const sizeUnit = [item.size, item.unit].filter(Boolean).join(' ');
   // The hint is a heuristic guess, never an answer — styled distinctly and never reflected in
   // which button (if any) starts selected (see the `dec` / btnOn below).
@@ -2697,8 +2709,12 @@ function pkBulkSelectNone(){
 }
 
 function pkBulkCardHtml(item){
-  const src = item.img ? item.img.replace('~', PKB.cdn || '') : '';
-  const thumb = src ? `<img class="pkb-thumb" src="${esc(src)}" alt="" loading="lazy" data-bc="${esc(item.barcode)}">` : `<div class="pkb-thumb-ph">ไม่มีรูป</div>`;
+  // Backup mirror first, original stashed on data-orig — same as the single-item tagger above.
+  const orig = item.img ? item.img.replace('~', PKB.cdn || '') : '';
+  const backup = backupImageUrl(item.barcode);
+  const thumb = backup
+    ? `<img class="pkb-thumb" src="${esc(backup)}" alt="" loading="lazy" data-bc="${esc(item.barcode)}" data-orig="${esc(orig)}">`
+    : `<div class="pkb-thumb-ph">ไม่มีรูป</div>`;
   const sizeUnit = [item.size, item.unit].filter(Boolean).join(' ');
   const hint = item.hint === 'sachet' ? `<div class="pkb-hint">น่าจะเป็นซอง</div>` : '';
   const on = PKB.selected.has(item.barcode) ? ' on' : '';
@@ -3147,19 +3163,24 @@ document.addEventListener('keydown', e => {
 });
 
 /* ================= IMAGE FALLBACK =================
-   `error` does not bubble, so this has to be a capture listener on document to see every
-   product <img> (data-bc marks one) as it fails. First failure: retry once against the backup
-   mirror. Second failure (or no backup for this barcode): stopPropagation() is NOT called, so
-   whatever this image already does on error (nothing, for most of these thumbnails — the
-   broken-image icon shows, same as before this feature existed) still happens exactly as before. */
+   Every product <img> that carries data-bc (the review list, packaging tagger and bulk grid
+   thumbnails) renders with the backup mirror as its src first — its original store-CDN url is
+   already known at render time here (unlike viewer.html), so it's stashed on data-orig rather
+   than looked up again. `error` does not bubble, so this has to be a capture listener on
+   document to see every one of these <img>s as it fails, wherever on the page it lives. First
+   failure (the backup mirror): switch to data-orig if there is one and it differs from what just
+   failed, marking data-fb so this never loops. Second failure (the original also failed) or no
+   original known: stopPropagation() is NOT called, so whatever this image already does on error
+   (nothing, for most of these thumbnails — the broken-image icon shows, same as before this
+   feature existed) still happens exactly as before. */
 document.addEventListener('error', e => {
   const im = e.target;
   if (!(im instanceof HTMLImageElement) || !im.dataset.bc) return;
-  if (im.dataset.fb) return;                        // already tried the backup once
-  const backup = backupImageUrl(im.dataset.bc);
-  if (!backup || im.src === backup) return;
+  if (im.dataset.fb) return;                        // already tried the fallback once
+  const orig = im.dataset.orig;
+  if (!orig || orig === im.src) return;
   im.dataset.fb = '1';
-  im.src = backup;
+  im.src = orig;
   e.stopPropagation();
 }, true);
 

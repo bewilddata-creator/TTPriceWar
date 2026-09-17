@@ -668,8 +668,10 @@ let cmpMinStores = 1, cmpProd = { L: null, R: null }, cmpDebL, cmpDebR, cmpPickD
  * per-observation loop over a raw price log, and the detail sheet no longer needs a
  * ?action=lookup round trip for size/unit. A cached payload from before size/unit/sachet
  * existed simply destructures those as undefined, defaulted to ''/0 below so nothing renders
- * "undefined". No image URL exists in this payload; the image comes from the separate
- * ?action=images payload (see applyImagesToP()). ราคาส่ง (wholesale) and ทุนส่ง (what a shop paid)
+ * "undefined". No ORIGINAL image URL exists in this payload; that comes from the separate
+ * ?action=images payload (see applyImagesToP()) — but every card can still show a picture from
+ * the backup mirror the moment it renders, keyed only by barcode (see backupImageUrl()), so a
+ * slow/failed images fetch no longer means no pictures at all. ราคาส่ง (wholesale) and ทุนส่ง (what a shop paid)
  * aren't in this payload either — ราคาส่ง rides along on the per-product ?action=prices response
  * (flag:'wholesale') and ทุนส่ง has its own ?action=tunsong endpoint, both fetched in openDetail().
  */
@@ -707,7 +709,9 @@ function decode(d){
       needs: needsInfo01 === 1,
       ref: ref || 0, lo: lo || 0, hi: hi || 0, ns: ns || 0, pd: pd || 0,
       size: size || '', unit: unit || '', sachet: sachet || 0,
-      img: '',   // filled in by applyImagesToP() once ?action=images has loaded, if ever
+      img: '',   // the ORIGINAL url — filled in by applyImagesToP() once ?action=images has
+                 // loaded, if ever; used only as a fallback once the backup mirror fails (see
+                 // the capture-phase 'error' listener near the end of this file)
       obs: [],   // per-store price observations for the \u0E2B\u0E21\u0E27\u0E14\u0E2B\u0E21\u0E39\u0E48 store filter \u2014 filled in below
       words: (brand + ' ' + item2 + ' ' + sku2 + ' ' + c3).toLowerCase().normalize('NFC')
         .split(/[^a-z0-9\u0E00-\u0E7F.+]+/).filter(Boolean)
@@ -731,12 +735,15 @@ function decode(d){
 }
 
 /**
- * Re-attach the cached/fetched ?action=images payload to the current P array. Called after every
- * decode() (P is rebuilt from scratch each time) so images survive refresh/rebuild, and again
- * once the images payload itself first arrives. img[i] is index-aligned to p[i] from ?action=summary
- * — there are no barcode keys — so a length mismatch means the two payloads were built from
- * different generations and the index join can no longer be trusted: applying it anyway would
- * attach the wrong picture to every product, which is worse than showing none, so it is skipped.
+ * Re-attach the cached/fetched ?action=images payload (the ORIGINAL, store-CDN urls) to the
+ * current P array — used only as the fallback once a product's backup-mirror image fails to
+ * load, never as the first thing rendered (see the capture-phase 'error' listener near the end
+ * of this file). Called after every decode() (P is rebuilt from scratch each time) so images
+ * survive refresh/rebuild, and again once the images payload itself first arrives. img[i] is
+ * index-aligned to p[i] from ?action=summary — there are no barcode keys — so a length
+ * mismatch means the two payloads were built from different generations and the index join can
+ * no longer be trusted: applying it anyway would attach the wrong picture to every product,
+ * which is worse than showing none, so it is skipped.
  */
 function applyImagesToP(){
   if(!IMG) return;
@@ -759,7 +766,13 @@ function applyImagesToP(){
  * Keyed on `generated`, not a once-per-page flag: after a rebuild adds products the old image
  * list is shorter than P, applyImagesToP() correctly refuses it, and a once-only loader would
  * leave every picture blank until the page was reopened — and even then a cached summary could
- * win the race. Any failure is silent: cards simply have no picture, and the next start() retries.
+ * win the race. Every card already has a picture from the backup mirror regardless (see decode()),
+ * so this payload only ever *improves* things — it supplies the ORIGINAL urls used as a fallback
+ * once a backup mirror image fails — which is why a slow or failed fetch here is retried with
+ * backoff instead of surfaced to the user: cards keep showing the backup either way, and the next
+ * start() retries too, but Google intermittently fails to deliver the ~2 MB payload badly enough
+ * that waiting for the next full page load would leave fallbacks unavailable far longer than
+ * necessary. Any failure is silent, as before.
  */
 async function loadImagesBackground(){
   const want = SUMMARY_GENERATED;
@@ -773,10 +786,20 @@ async function loadImagesBackground(){
       useImages(cached);
       return;
     }
-    const d = await api('?action=images', {}, IMAGES_TIMEOUT);
-    if(d && d.ok && Array.isArray(d.img) && typeof d.cdn === 'string'){
-      useImages(d);
-      idbSet('images', d);   // best-effort write; a failure here must never break anything
+    // First try immediately, then a few more times with backoff before giving up — the delays
+    // themselves double as the "is a newer summary already in charge?" check below, so a rebuild
+    // that lands mid-retry stops this loop rather than racing it (useImages() already refuses a
+    // stale payload too, but bailing out here also stops wasting requests on the old `want`).
+    const RETRY_DELAYS_MS = [0, 15000, 45000, 120000];
+    for(const delay of RETRY_DELAYS_MS){
+      if(delay) await new Promise(resolve => setTimeout(resolve, delay));
+      if(SUMMARY_GENERATED !== want) return;
+      const d = await api('?action=images', {}, IMAGES_TIMEOUT);
+      if(d && d.ok && Array.isArray(d.img) && typeof d.cdn === 'string'){
+        useImages(d);
+        idbSet('images', d);   // best-effort write; a failure here must never break anything
+        return;
+      }
     }
   } finally {
     if(imgLoadingFor === want) imgLoadingFor = null;
@@ -793,15 +816,20 @@ function useImages(d){
   fillOpenDetailImage();
 }
 /**
- * If the detail sheet was opened before ?action=images finished loading, its image slot was left
- * on the placeholder (see renderDetailImage()). Once the payload lands and applyImagesToP() has
- * run, re-paint that same product's image slot if the sheet is still open on it — the user
- * should not be stuck with a blank slot just for having opened the sheet quickly.
+ * The detail sheet's image slot already shows the backup mirror the moment it opens (see
+ * renderDetailImage()), so this payload landing doesn't fill a blank slot the way it used to —
+ * it only supplies the ORIGINAL url the capture-phase 'error' listener falls back to if the
+ * backup ever fails. If that slot is already showing something successfully, re-painting it here
+ * would just flicker it back to the backup for no visible benefit, so this only repaints when the
+ * slot is not currently showing this same product's picture (still loading, or already failed).
  */
 function fillOpenDetailImage(){
   if(!isDetailOpen() || !curDetailBc) return;
   const p = PBY_BC.get(curDetailBc);
-  if(p) renderDetailImage(p);
+  if(!p) return;
+  const im = $("dImg");
+  if(!im.classList.contains('hidden') && im.dataset.bc === p.bc) return;   // already showing fine
+  renderDetailImage(p);
 }
 
 /* ================= LOAD =================
@@ -916,6 +944,14 @@ function doSearch(q, pool){
   return out.map(x=>x[1]);
 }
 let debT;
+/**
+ * The src every product <img> renders with first, everywhere a product thumbnail appears — the
+ * backup mirror, keyed only by the barcode, so a picture shows up even before (or if) the
+ * separate ?action=images payload of ORIGINAL store-CDN urls ever arrives (see decode()/
+ * applyImagesToP()). '' when the product has no real barcode to key a backup by, in which case
+ * callers must render no <img> at all rather than one with an empty src.
+ */
+function firstImgSrc(p){ return backupImageUrl(p.bc); }
 function priceLine(p){
   if(!p.ref) return `<span class="none">${p.needs?'รอกรอกข้อมูล':'ยังไม่มีราคา'}</span>`;
   const range = p.lo===p.hi ? fmt(p.lo) : `${fmt(p.lo)}–${Math.round(p.hi)}`;
@@ -926,10 +962,12 @@ function renderSearch(q){
   const res = q.trim() ? doSearch(q) : P.slice(0,60);
   $("qMeta").textContent = q.trim() ? `พบ ${res.length.toLocaleString()} รายการ${res.length>60?' · แสดง 60 แรก':''}`
     : `แสดง 60 รายการแรกจาก ${P.length.toLocaleString()} — พิมพ์เพื่อค้นหา`;
-  $("results").innerHTML = res.slice(0,60).map(p=>`
+  $("results").innerHTML = res.slice(0,60).map(p=>{
+    const src = firstImgSrc(p);
+    return `
     <div class="pcard" data-bc="${esc(p.bc)}">
       <div class="body">
-        ${p.img ? `<div class="thumb"><img class="thumb-img" alt="" src="${esc(p.img)}" data-bc="${esc(p.bc)}"></div>` : ''}
+        ${src ? `<div class="thumb"><img class="thumb-img" alt="" src="${esc(src)}" data-bc="${esc(p.bc)}"></div>` : ''}
         <div class="info">
           <div class="brand">${esc(p.brand)||'&nbsp;'}</div>
           <div class="nm">${esc(p.item)||esc(p.bc)}</div>
@@ -937,9 +975,13 @@ function renderSearch(q){
           <div class="pr">${priceLine(p)}</div>
         </div>
       </div>
-    </div>`).join('');
-  // A dead CDN URL must never show a broken-image icon — drop the whole thumb, same approach as
-  // the detail sheet's #dImg. At most 60 cards are ever in the DOM, so this is cheap.
+    </div>`;
+  }).join('');
+  // A dead backup-mirror (or, once it's fallen back, original-CDN) URL must never show a
+  // broken-image icon — drop the whole thumb, same approach as the detail sheet's #dImg. The
+  // capture-phase 'error' listener near the end of this file tries the ORIGINAL url as a fallback
+  // first and stopPropagation()s, so this listener never sees that first (backup) failure; it
+  // only fires once nothing is left to try. At most 60 cards are ever in the DOM, so this is cheap.
   $("results").querySelectorAll('.thumb-img').forEach(im=>{
     im.addEventListener('error', () => { im.closest('.thumb')?.remove(); }, { once:true });
   });
@@ -947,11 +989,13 @@ function renderSearch(q){
 
 /* ================= DETAIL =================
    The image and size/unit no longer need their own network round trip: size/unit ride along on
-   the ?action=summary payload (see decode()), and the image comes from the already-loaded/loading
-   ?action=images payload (p.img, see applyImagesToP()). Two fetches remain — prices (ราคาปลีก +
-   ราคาส่ง, same response, split by flag) and tunsong (ทุนส่ง) — and they are kicked off together
-   and rendered independently as each resolves, never serialised: each costs ~1.5s on its own, and
-   neither section may block on, or be blanked by, the other's success or failure. */
+   the ?action=summary payload (see decode()), and the image renders straight from the backup
+   mirror (see firstImgSrc()/renderDetailImage()) — the already-loaded/loading ?action=images
+   payload (p.img, see applyImagesToP()) only supplies the ORIGINAL url used as a fallback if that
+   fails. Two fetches remain — prices (ราคาปลีก + ราคาส่ง, same response, split by flag) and
+   tunsong (ทุนส่ง) — and they are kicked off together and rendered independently as each resolves,
+   never serialised: each costs ~1.5s on its own, and neither section may block on, or be blanked
+   by, the other's success or failure. */
 // bc of whichever product the detail sheet is currently showing, so a late-arriving images
 // payload (loadImagesBackground can finish well after the sheet is opened, or even after it's
 // closed and a different one opened) knows whether it still needs to paint into #dImg.
@@ -970,23 +1014,28 @@ function resetDetailLoading(p){
   $("dTunsongRows").innerHTML = '';
 }
 /**
- * Paints (or re-paints) the detail sheet's image slot from p.img. Called once synchronously when
- * the sheet opens, and again from loadImagesBackground() if the images payload finishes loading
- * while this same product's sheet is still open — p.img may be '' at open time simply because
- * the page was opened seconds ago and ?action=images hasn't landed yet, not because the product
- * has no picture, and the two cases are indistinguishable from here, so both show the placeholder
- * until/unless a real URL shows up.
+ * Paints (or re-paints) the detail sheet's image slot with the backup mirror, whenever the
+ * product has a real barcode to key one by — not from p.img, which holds the ORIGINAL url used
+ * only as a fallback (see the capture-phase 'error' listener near the end of this file) once the
+ * backup fails, and may still be '' here regardless of whether the product has a picture, simply
+ * because ?action=images hasn't landed yet. Called once synchronously when the sheet opens, and
+ * again from fillOpenDetailImage() if the images payload finishes loading while this same
+ * product's sheet is still open and its slot isn't already showing something successfully. The
+ * 'error' listener below only ever sees the SECOND failure (no original, or the original failed
+ * too) — the capture listener's stopPropagation() keeps it from firing on the first, backup,
+ * failure.
  */
 function renderDetailImage(p){
   $("dImg").classList.add('hidden'); $("dImg").removeAttribute('src');
   $("dNoimg").classList.remove('hidden'); $("dNoimg").textContent = '?';
-  if(!p.img) return;
+  const src = firstImgSrc(p);
+  if(!src) return;
   const im = $("dImg");
   delete im.dataset.fb;                             // reused element — clear any earlier retry flag
   im.dataset.bc = p.bc;
   im.addEventListener('load', () => { im.classList.remove('hidden'); $("dNoimg").classList.add('hidden'); }, { once:true });
   im.addEventListener('error', () => { im.classList.add('hidden'); $("dNoimg").classList.remove('hidden'); }, { once:true });
-  im.src = p.img;
+  im.src = src;
 }
 async function openDetail(bc){
   const p = PBY_BC.get(bc);
@@ -1431,8 +1480,9 @@ function sortBrandModalRows(arr){
 }
 function brandModalRowHtml(p){
   const range = (!p.lo && !p.hi) ? '—' : (p.lo===p.hi ? fmt(p.lo) : `${fmt(p.lo)}–${fmt(p.hi)}`);
+  const src = firstImgSrc(p);
   return `<tr class="rowbtn" data-bc="${esc(p.bc)}">
-    <td>${p.img ? `<div class="bm-thumb"><img class="bm-thumb-img" alt="" src="${esc(p.img)}" data-bc="${esc(p.bc)}"></div>` : ''}</td>
+    <td>${src ? `<div class="bm-thumb"><img class="bm-thumb-img" alt="" src="${esc(src)}" data-bc="${esc(p.bc)}"></div>` : ''}</td>
     <td>
       <div class="bm-line-mut">${esc(p.brand)||'&nbsp;'}</div>
       <div class="bm-item">${esc(p.item)||esc(p.bc)}</div>
@@ -1721,8 +1771,9 @@ function renderCmpSide(side){
   }
   searchWrap.classList.add('hidden');
   picked.classList.remove('hidden');
-  const img = p.img
-    ? `<div class="cmp-imgwrap"><img alt="" src="${esc(p.img)}" data-bc="${esc(p.bc)}"></div>`
+  const cmpSrc = firstImgSrc(p);
+  const img = cmpSrc
+    ? `<div class="cmp-imgwrap"><img alt="" src="${esc(cmpSrc)}" data-bc="${esc(p.bc)}"></div>`
     : `<div class="cmp-imgwrap"><div class="noimg">?</div></div>`;
   const catPath = [p.c1,p.c2,p.c3].filter(Boolean).join(' › ');
   const sizeUnit = [p.size,p.unit].filter(Boolean).join(' ');
@@ -1935,20 +1986,27 @@ function initEvents(){
 }
 
 /* ================= IMAGE FALLBACK =================
-   `error` does not bubble, so this has to be a capture listener on document to see every
-   product <img> (data-bc marks one) as it fails. First failure: retry once against the backup
-   mirror. Second failure (or no backup for this barcode): stopPropagation() is NOT called, so
-   whatever this image already does on error (drop the thumb, show the '?' placeholder, or —
-   for the brand-modal/เทียบสินค้า thumbs, which have none — nothing) still happens exactly as
-   before this feature existed. */
+   Every product <img> (data-bc marks one) renders with the backup mirror as its src first (see
+   firstImgSrc()) — the ORIGINAL store-CDN url only exists once the separate ?action=images
+   payload has loaded (p.img, see applyImagesToP()), which can take a while or fail outright, so
+   it can never be the FIRST thing rendered. `error` does not bubble, so this has to be a capture
+   listener on document to see every product <img> as it fails, wherever on the page it lives.
+   First failure (the backup mirror): look up the product's original url AT ERROR TIME, not at
+   render time — it may have arrived after this <img> was painted — and switch to it if there is
+   one and it differs from what just failed, marking data-fb so this never loops. Second failure
+   (the original also failed) or no original known (never arrived, or this barcode simply has
+   none): stopPropagation() is NOT called, so whatever this image already does on error (drop the
+   thumb, show the '?' placeholder, or — for the เทียบสินค้า thumb, which has none — nothing)
+   still happens exactly as before this feature existed. */
 document.addEventListener('error', e => {
   const im = e.target;
   if (!(im instanceof HTMLImageElement) || !im.dataset.bc) return;
-  if (im.dataset.fb) return;                        // already tried the backup once
-  const backup = backupImageUrl(im.dataset.bc);
-  if (!backup || im.src === backup) return;
+  if (im.dataset.fb) return;                        // already tried the fallback once
+  const p = PBY_BC.get(im.dataset.bc);
+  const orig = p && p.img;
+  if (!orig || orig === im.src) return;
   im.dataset.fb = '1';
-  im.src = backup;
+  im.src = orig;
   e.stopPropagation();
 }, true);
 
