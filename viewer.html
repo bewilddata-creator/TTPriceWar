@@ -438,7 +438,7 @@ const API_URL = "https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q
 const NET_TIMEOUT = 30000;
 const SUMMARY_TIMEOUT = 25000;
 const PRICES_TIMEOUT = 20000;
-const IMAGES_TIMEOUT = 15000;
+const IMAGES_TIMEOUT = 30000;
 const REBUILD_TIMEOUT = 130000;   // buildAnalysis() re-reads 26k+ products / 45k+ observations — 30-60s is normal
 
 /* ================= tiny DOM / format helpers ================= */
@@ -650,10 +650,11 @@ let catLabelCur = '';
 // renderCat() alongside catLabelCur — the brand modal appends this too, so it can never show
 // all-store prices while the table behind it is filtered.
 let catFilterLabelCur = '';
-// ?action=images is fetched once, lazily, after the first successful render (see start()).
+// ?action=images is fetched lazily after a render, and again whenever the summary's `generated`
+// stamp moves on (a rebuild adds products, so the old list no longer lines up — see start()).
 // IMG holds the last-loaded payload so it can be re-applied to P every time decode() rebuilds it
 // (a plain refresh/rebuild replaces P entirely, which would otherwise drop the img field).
-let IMG = null, imgFetchedOnce = false, imgLenWarned = false, SUMMARY_GENERATED = null;
+let IMG = null, imgLoadingFor = null, imgLenWarned = false, SUMMARY_GENERATED = null;
 // เทียบสินค้า (product-vs-product compare) — two independently chosen products keyed 'L'/'R', plus
 // a shared minimum-store-count filter (against each product's precomputed `ns`) that only narrows
 // what each side's OWN search offers. Entirely separate from the หมวดหมู่ store/category filter —
@@ -753,32 +754,43 @@ function applyImagesToP(){
 }
 
 /**
- * Fires once, after the first successful render, and never blocks or delays it — see start().
- * A cache hit is applied immediately; a background refetch only happens if the cached payload's
- * `generated` stamp differs from the summary's (or nothing was cached at all). Any failure here
- * is silent: the page keeps behaving exactly as it does today, cards simply have no picture.
+ * Makes sure IMG belongs to the summary currently on screen. Called from start() every time a
+ * summary is rendered; a no-op when IMG already matches or a load for this same stamp is running.
+ * Keyed on `generated`, not a once-per-page flag: after a rebuild adds products the old image
+ * list is shorter than P, applyImagesToP() correctly refuses it, and a once-only loader would
+ * leave every picture blank until the page was reopened — and even then a cached summary could
+ * win the race. Any failure is silent: cards simply have no picture, and the next start() retries.
  */
 async function loadImagesBackground(){
-  if(imgFetchedOnce) return;
-  imgFetchedOnce = true;
-  let cached = null;
-  try { cached = await idbGet('images'); } catch(err) { cached = null; }
-  if(cached && Array.isArray(cached.img) && typeof cached.cdn === 'string'){
-    IMG = cached;
-    applyImagesToP();
-    renderCurrent();
-    fillOpenDetailImage();
-  }
-  if(!cached || cached.generated !== SUMMARY_GENERATED){
+  const want = SUMMARY_GENERATED;
+  if(IMG && IMG.generated === want) return;
+  if(imgLoadingFor === want) return;
+  imgLoadingFor = want;
+  try {
+    let cached = null;
+    try { cached = await idbGet('images'); } catch(err) { cached = null; }
+    if(cached && Array.isArray(cached.img) && typeof cached.cdn === 'string' && cached.generated === want){
+      useImages(cached);
+      return;
+    }
     const d = await api('?action=images', {}, IMAGES_TIMEOUT);
     if(d && d.ok && Array.isArray(d.img) && typeof d.cdn === 'string'){
-      IMG = d;
-      applyImagesToP();
-      renderCurrent();
-      fillOpenDetailImage();
+      useImages(d);
       idbSet('images', d);   // best-effort write; a failure here must never break anything
     }
+  } finally {
+    if(imgLoadingFor === want) imgLoadingFor = null;
   }
+}
+function useImages(d){
+  // A load started for an older summary can finish after the right list is already in place —
+  // never let it replace a list that matches what is on screen.
+  if(IMG && IMG.generated === SUMMARY_GENERATED && d.generated !== SUMMARY_GENERATED) return;
+  IMG = d;
+  imgLenWarned = false;
+  applyImagesToP();
+  renderCurrent();
+  fillOpenDetailImage();
 }
 /**
  * If the detail sheet was opened before ?action=images finished loading, its image slot was left
@@ -834,10 +846,10 @@ function start(d, fromCache){
     $("loading").classList.add('hidden');
     buildCat(); buildBrand();
     tab(ls.get('viewerTab', 'search'));
-    loadImagesBackground();   // fire-and-forget, once, only after this first successful render
   } else {
     renderCurrent();
   }
+  loadImagesBackground();   // fire-and-forget; no-op unless IMG is missing or from another build
 }
 function refresh(){ if(started) $("footInfo").textContent = 'กำลังรีเฟรช…'; boot(true); }
 
