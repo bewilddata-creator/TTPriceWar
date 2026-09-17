@@ -231,6 +231,14 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
   font-weight:700; font-size:14px}
 #smSaveBtn:disabled{opacity:.35; cursor:default}
 
+/* ---- admin key modal (reuses .modal-overlay/.modal-panel above) ---- */
+#adminModalOverlay{z-index:80}   /* above the store modal — never both make sense at once, but stay on top if they do */
+#adminKeySubmitBtn{background:var(--ink); color:#fff; padding:12px 22px; border-radius:11px;
+  font-weight:700; font-size:14px; display:inline-flex; align-items:center; gap:9px}
+#adminKeySubmitBtn:disabled{opacity:.55; cursor:default}
+#adminKeyError{font-size:12.5px; font-weight:600; color:var(--warn)}
+#adminLogoutBtn{margin-left:14px}
+
 /* ---- ทุนส่ง (competitor cost intel) ---- */
 .ts-warnbar{background:var(--warn-bg); border:1.5px solid var(--warn); border-radius:var(--r);
   padding:12px 16px; color:var(--warn); font-weight:700; font-size:13.5px}
@@ -314,6 +322,7 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
     <button class="toptab" id="tabTunsong">ทุนส่ง</button>
     <button class="toptab" id="tabSachet">ประเภทบรรจุภัณฑ์</button>
   </nav>
+  <button type="button" class="linkbtn hidden" id="adminLogoutBtn">ออกจากระบบแอดมิน</button>
 </header>
 
 <main>
@@ -647,6 +656,27 @@ table#storesTable tbody td{padding:9px 8px; border-bottom:1px solid var(--line);
     </div>
   </div>
 
+  <!-- Admin key gate (backend v22+). Always dismissable — most of this page (obs, lookups,
+       stores/prices GETs, …) needs no admin token at all per the contract, so closing this and
+       leaving it unauthenticated must never trap the admin out of the work that IS open access. -->
+  <div class="modal-overlay hidden" id="adminModalOverlay">
+    <div class="modal-panel" id="adminModalPanel" role="dialog" aria-modal="true" aria-labelledby="adminModalTitle" style="max-width:360px">
+      <div class="modal-head">
+        <div class="eyebrow" id="adminModalTitle" style="margin:0">รหัสแอดมิน</div>
+        <button type="button" class="modal-close" id="adminModalCloseBtn" aria-label="ปิด">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <input type="password" class="tin" id="adminKeyInput" autocomplete="current-password" autocorrect="off" spellcheck="false">
+        </div>
+        <div class="hidden" id="adminKeyError"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="adminKeySubmitBtn">เข้าสู่ระบบ</button>
+      </div>
+    </div>
+  </div>
+
 </main>
 
 <div id="toast"></div>
@@ -672,10 +702,135 @@ const ls = {
   set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)) } catch(e) {} }
 };
 
-/** Every network call goes through here — same shape as index.html's api(): no request may
- *  hang the UI, and Apps Script cannot answer a CORS preflight so POST bodies stay text/plain. */
-/**
- * Every network call goes through here, with a timeout and one retry.
+/* ================= ADMIN AUTH (backend v22+) =================
+   Every backend call this page makes is either open or admin-gated (see the contract's "who can
+   call what" table) — the page never needs to know which, because withAdminAuth() below rides
+   the stored token along on EVERY call and the server is the one that checks. Against an old
+   (v21) backend this is inert: unknown fields are ignored, adminme falls back to the generic
+   {ok:true, msg:...} shape, and the page runs exactly as it did before this section existed. */
+const ADMIN_LS_KEY = 'ps_admin_auth';
+const ADMIN = { enabled: false, modalOpen: false, submitting: false };
+
+/** null once the stored token is missing OR past its `expires` — a monthly re-entry falls out
+ *  of this for free, since an expired token is simply treated as no token at all. */
+function getAdminAuth(){
+  const a = ls.get(ADMIN_LS_KEY, null);
+  if (!a || !a.token) return null;
+  if (!a.expires || Date.now() > a.expires) { ls.set(ADMIN_LS_KEY, null); return null; }
+  return a;
+}
+function adminToken(){ const a = getAdminAuth(); return a ? a.token : null; }
+function setAdminAuth(token, expires){ ls.set(ADMIN_LS_KEY, { token, expires }); }
+function clearAdminAuth(){ ls.set(ADMIN_LS_KEY, null); }
+
+function isAdminRequired(d){ return !!(d && d.ok === false && d.auth === 'admin_required'); }
+/** Item ids (barcodes, obs_ids, …) that a batch response rejected for missing admin auth — obs
+ *  items are open per the contract, so in practice this only ever fires for admin-only items
+ *  (updateProduct, …) riding in the same batch as open ones. */
+function batchAdminRequiredIds(d){
+  return new Set((d && Array.isArray(d.results) ? d.results : [])
+    .filter(r => r.status === 'admin_required').map(r => r.id));
+}
+
+/** The one place the stored admin token is attached to an outgoing call — GET gets `&a=`, POST
+ *  bodies get `admin` at the top level (batch included: the contract reads it once from there).
+ *  Nothing is added when there is no token, so an unauthenticated admin page behaves exactly
+ *  like every open call already does. */
+function withAdminAuth(path, opts){
+  const token = adminToken();
+  if (!token) return [path, opts];
+  const isGet = !opts.method || String(opts.method).toUpperCase() === 'GET';
+  if (isGet) return [path + (path.includes('?') ? '&' : '?') + 'a=' + encodeURIComponent(token), opts];
+  if (typeof opts.body === 'string') {
+    try {
+      const body = JSON.parse(opts.body);
+      body.admin = token;
+      return [path, { ...opts, body: JSON.stringify(body) }];
+    } catch (e) { /* not a JSON body — nothing sensible to augment */ }
+  }
+  return [path, opts];
+}
+
+/** The one recogniser for "the token this call carried was missing/expired/revoked" — checked
+ *  on every response api() gets back, so no call site can forget to handle it. Clearing the
+ *  token and opening the modal here is ALWAYS correct and ALWAYS safe: every flow's own
+ *  success/failure handling still runs on the same (falsy/partial) response afterwards, so
+ *  nothing here can turn a failure into a false "saved" — see each call site for how it keeps
+ *  its own data (draft rows, pending queue, form fields) intact on top of this. */
+function checkAdminRequired(d){
+  if (isAdminRequired(d) || batchAdminRequiredIds(d).size) onAdminRequired();
+}
+function onAdminRequired(){
+  clearAdminAuth();
+  openAdminModal();
+}
+
+function showAdminError(msg){
+  const el = $('adminKeyError');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+/** Always closable (see the markup comment above the overlay) — resetting the input/error only
+ *  the FIRST time it opens means a second admin_required response (e.g. the boot check landing
+ *  right after a mid-session save already opened it) never wipes out what the admin is typing. */
+function openAdminModal(){
+  if (!ADMIN.modalOpen) { $('adminKeyInput').value = ''; $('adminKeyError').classList.add('hidden'); }
+  ADMIN.modalOpen = true;
+  $('adminModalOverlay').classList.remove('hidden');
+  requestAnimationFrame(() => $('adminKeyInput').focus());
+}
+function closeAdminModal(){
+  ADMIN.modalOpen = false;
+  $('adminModalOverlay').classList.add('hidden');
+}
+
+async function submitAdminKey(){
+  if (ADMIN.submitting) return;
+  const key = $('adminKeyInput').value;
+  if (!key) { showAdminError('กรุณาใส่รหัส'); return; }
+  ADMIN.submitting = true;
+  $('adminKeySubmitBtn').disabled = true;
+  $('adminKeySubmitBtn').innerHTML = '<span class="rv-spinner" aria-hidden="true"></span>กำลังเข้าสู่ระบบ…';
+  $('adminKeyError').classList.add('hidden');
+  const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ type: 'adminLogin', key }) }, 20000);
+  ADMIN.submitting = false;
+  $('adminKeySubmitBtn').disabled = false;
+  $('adminKeySubmitBtn').textContent = 'เข้าสู่ระบบ';
+  if (!d.ok || !d.admin_token) {
+    const msg = d.error === 'bad_key' ? 'รหัสไม่ถูกต้อง'
+      : d.error === 'locked' ? `ใส่รหัสผิดหลายครั้ง ลองใหม่ใน ${d.retry_after_min} นาที`
+      : d.error === 'no_admin_key' ? 'ยังไม่ได้ตั้งรหัสแอดมิน — ตั้งได้ที่เมนู TT Price Wars → ตั้งรหัสแอดมิน ในชีต'
+      : backendMsg(d, 'เข้าสู่ระบบไม่สำเร็จ');
+    showAdminError(msg);
+    return;
+  }
+  ADMIN.enabled = true;
+  setAdminAuth(d.admin_token, d.expires);
+  closeAdminModal();
+  $('adminLogoutBtn').classList.remove('hidden');
+  toast('เข้าสู่ระบบแล้ว — กดบันทึกอีกครั้ง');
+  // The packaging queue is the one flow worth auto-retrying — it is a silent background POST to
+  // begin with, so the admin never "pressed save" on it in the first place. Everything else
+  // (price entry, ทุนส่ง, the review form, store edits, bulk sachet) is a deliberate button press
+  // the admin can just repeat now that a token exists, per the toast above.
+  if (PK.pending.size) flushPkPending();
+}
+
+/** GET ?action=adminme on boot: decides whether this deployment even HAS admin auth, and if so
+ *  whether the stored token (if any) still holds. Never blocks the rest of init() — the modal,
+ *  if needed, appears as an overlay once this resolves (checkAdminRequired, called from api(),
+ *  is what actually opens it for the admin_required case below). */
+async function checkAdminAuth(){
+  const d = await api('?action=adminme');
+  if (d && d.offline) return;   // genuine network failure — run as today; the next real call surfaces auth if needed
+  if (d && d.ok && typeof d.expires !== 'undefined') { ADMIN.enabled = true; $('adminLogoutBtn').classList.remove('hidden'); return; }
+  if (isAdminRequired(d)) { ADMIN.enabled = true; $('adminLogoutBtn').classList.remove('hidden'); return; }
+  // Anything else — most likely the old backend's generic {ok:true, msg:...} with no `expires` —
+  // means auth is not deployed yet: ADMIN.enabled stays false and the page runs as it always has.
+}
+
+/** Every network call goes through here, with a timeout and one retry.
  *
  * Apps Script latency swings hard: the same endpoint measured 2.1s and 9.6s minutes apart, and
  * cold starts get slower as the Sheet grows. A 12s ceiling was close enough to that spread to
@@ -686,13 +841,16 @@ const ls = {
  * recognise a repeat. Retrying a write from two places would be two mechanisms guessing.
  */
 async function api(path, opts = {}, timeout = NET_TIMEOUT) {
+  [path, opts] = withAdminAuth(path, opts);
   const isGet = !opts.method || String(opts.method).toUpperCase() === 'GET';
   for (let attempt = 0; attempt < (isGet ? 2 : 1); attempt++) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeout);
     try {
       const res = await fetch(API_URL + path, { ...opts, signal: ctl.signal });
-      return await res.json();
+      const d = await res.json();
+      checkAdminRequired(d);
+      return d;
     } catch (e) {
       if (attempt === 0 && isGet) continue;   // one more go before calling it a failure
       return { ok: false, offline: true };
@@ -723,6 +881,7 @@ function setSubmitStatus(msg, isErr){
  *  they must not collapse into the same generic error text. */
 function backendMsg(d, fallback){
   if (d && d.offline) return 'ไม่มีสัญญาณ — ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่';
+  if (isAdminRequired(d)) return `${fallback} — ต้องเข้าสู่ระบบแอดมินอีกครั้ง`;
   if (d && d.ok && typeof d.msg === 'string') return `${fallback} — เซิร์ฟเวอร์รุ่นนี้ยังไม่รองรับคำสั่งนี้`;
   if (d && d.error) return `${fallback} (${d.error})`;
   return fallback;
@@ -1518,6 +1677,15 @@ async function submitBatch(){
 
   submitting = false;
 
+  if (isAdminRequired(d)) {
+    // obs items are open per the contract, so this top-level shape should not happen for a
+    // pure-obs batch — but the draft is already flushed to localStorage above regardless, so
+    // there is nothing to lose by handling it the same honest way as any other failure.
+    setSubmitStatus('บันทึกไม่สำเร็จ — ต้องเข้าสู่ระบบแอดมินอีกครั้ง ข้อมูลยังอยู่ในฉบับร่าง กดบันทึกอีกครั้งหลังเข้าสู่ระบบ', true);
+    toast('ต้องเข้าสู่ระบบแอดมิน', true);
+    updateSubmitButton();
+    return;
+  }
   if (!d.ok || !Array.isArray(d.results)) {
     // Draft stays intact on failure — nothing typed is thrown away over a bad connection. It is
     // safe to just press save again: every row above already kept the SAME obs_id it just sent
@@ -1551,9 +1719,12 @@ async function submitBatch(){
 
   if (failed.length) {
     // Never clear rows the server did not confirm. Silently dropping typed work because the
-    // response "looked" successful is the worst outcome this page can produce.
+    // response "looked" successful is the worst outcome this page can produce. Rows the backend
+    // actually wrote (or recognised as a duplicate) are still reported as saved even when a
+    // DIFFERENT item in the same batch came back admin_required — see batchAdminRequiredIds.
     keepOnlyFailedRows(confirmedKeys);
-    setSubmitStatus(`${statusMsg} · ${failed.length} แถวไม่สำเร็จ ยังอยู่ในตาราง${qtyMsg}`, true);
+    const authNote = batchAdminRequiredIds(d).size ? ' — ต้องเข้าสู่ระบบแอดมินอีกครั้งสำหรับส่วนที่เหลือ' : '';
+    setSubmitStatus(`${statusMsg} · ${failed.length} แถวไม่สำเร็จ ยังอยู่ในตาราง${qtyMsg}${authNote}`, true);
     toast(`${failed.length} แถวไม่สำเร็จ`, true);
     updateSubmitButton();
     return;
@@ -1894,6 +2065,7 @@ async function onImgFileChange(file){
     updateImgPreview(dataUrl);   // instant feedback while the upload is in flight
     const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({ type: 'uploadImage', barcode, photo: dataUrl }) }, 20000);
+    if (isAdminRequired(d)) { toast('อัปโหลดรูปไม่สำเร็จ — ต้องเข้าสู่ระบบแอดมินอีกครั้ง', true); return; }
     const r = d.ok && Array.isArray(d.results) ? d.results[0] : null;
     if (!r || r.status !== 'updated' || !r.url) { toast('อัปโหลดรูปไม่สำเร็จ', true); return; }
     if (RV.selectedBarcode !== barcode) return;   // the admin moved to another item meanwhile
@@ -1929,6 +2101,11 @@ async function saveReview(){
   if (btn) btn.disabled = true;
   const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
     body: JSON.stringify({ type: 'updateProduct', barcode: p.barcode, fields, clear_needs_info: true }) }, 20000);
+  if (isAdminRequired(d)) {
+    toast('บันทึกไม่สำเร็จ — ต้องเข้าสู่ระบบแอดมินอีกครั้ง', true);
+    if (btn) btn.disabled = false;
+    return;
+  }
   const r = d.ok && Array.isArray(d.results) ? d.results[0] : null;
   if (!r || r.status !== 'updated') {
     toast('บันทึกไม่สำเร็จ', true);
@@ -2069,6 +2246,13 @@ async function saveStoreModal(){
 
     const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({ type: 'updateStore', store_id: orig.id, fields }) }, 20000);
+    if (isAdminRequired(d)) {
+      // Nothing on screen changes — the table still shows pre-edit values and the modal stays
+      // open with what the admin typed, same as any other failed save here.
+      toast('บันทึกไม่สำเร็จ — ต้องเข้าสู่ระบบแอดมินอีกครั้ง', true);
+      btn.disabled = false;
+      return;
+    }
     const r = d.ok && Array.isArray(d.results) ? d.results[0] : null;
 
     if (r && r.status === 'duplicate_name') {
@@ -2094,6 +2278,7 @@ async function saveStoreModal(){
   if (!storeName) { toast('กรุณาระบุชื่อร้าน', true); btn.disabled = false; return; }
   const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
     body: JSON.stringify({ type: 'createStore', store_id: '', store: storeName, region, channel, notes }) }, 20000);
+  if (isAdminRequired(d)) { toast('บันทึกไม่สำเร็จ — ต้องเข้าสู่ระบบแอดมินอีกครั้ง', true); btn.disabled = false; return; }
   const r = d.ok && Array.isArray(d.results) ? d.results[0] : null;
   if (!r) { toast('บันทึกไม่สำเร็จ', true); btn.disabled = false; return; }
 
@@ -2529,7 +2714,11 @@ async function flushPkPending(){
     body: JSON.stringify({ type: 'batch', items }) }, 20000);
   pkFlushing = false;
   if (d.ok && Array.isArray(d.results)) {
-    const confirmed = new Set(d.results.filter(r => r.status && r.status !== 'error' && r.status !== 'failed').map(r => r.id));
+    // "admin_required" must NOT count as confirmed — checkAdminRequired() (inside api()) already
+    // cleared the token and opened the key modal by the time this runs; the decision stays in
+    // PK.pending so submitAdminKey's post-login retry (and, failing that, the idle/count/hidden
+    // triggers) sends it again once there is a token to send it with.
+    const confirmed = new Set(d.results.filter(r => r.status && r.status !== 'error' && r.status !== 'failed' && r.status !== 'admin_required').map(r => r.id));
     entries.forEach(([barcode]) => { if (confirmed.has(barcode)) PK.pending.delete(barcode); });
   }
   // Anything left in PK.pending (network failure, or simply missing from `results`) stays put
@@ -3052,6 +3241,7 @@ $('pkStage').addEventListener('click', e => {
 // other four tabs' many text fields — hence the currentScreen guard, the PK.view guard, and the
 // input/textarea/select check, in that order, before anything else runs.
 document.addEventListener('keydown', e => {
+  if (ADMIN.modalOpen) return;   // the key modal is the only thing the admin should be able to act on
   if (currentScreen !== 'sachet') return;
   if (PK.view !== 'single') return;
   const tag = e.target.tagName;
@@ -3159,6 +3349,7 @@ $('storeModalOverlay').addEventListener('click', e => {
   if (e.target === $('storeModalOverlay')) closeStoreModal();
 });
 document.addEventListener('keydown', e => {
+  if (ADMIN.modalOpen) return;   // the key modal owns Escape while it is up (see its own wiring)
   if (e.key === 'Escape' && !$('storeModalOverlay').classList.contains('hidden')) closeStoreModal();
 });
 
@@ -3244,8 +3435,24 @@ $('storeModalPanel').addEventListener('keydown', e => {
   else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 });
 
+/* ---- admin key modal wiring ---- */
+$('adminLogoutBtn').addEventListener('click', () => { clearAdminAuth(); openAdminModal(); });
+$('adminModalCloseBtn').addEventListener('click', closeAdminModal);
+$('adminKeySubmitBtn').addEventListener('click', submitAdminKey);
+$('adminKeyInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submitAdminKey(); } });
+// Same minimal focus trap as the store modal, above.
+$('adminModalPanel').addEventListener('keydown', e => {
+  if (e.key !== 'Tab') return;
+  const list = [...$('adminModalPanel').querySelectorAll('input, button')].filter(el => !el.disabled && !el.classList.contains('hidden'));
+  if (!list.length) return;
+  const first = list[0], last = list[list.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+
 /* ================= INIT ================= */
 function init(){
+  checkAdminAuth();             // fire-and-forget — never delays the loads below; see its own doc
   $('dateInput').value = todayStr();
   $('tsDateInput').value = todayStr();
   restoreDraft();               // may overwrite date/store/mode/rows from a saved draft

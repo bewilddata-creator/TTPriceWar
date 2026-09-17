@@ -1,5 +1,5 @@
 /**
- * TT PRICE WARS — backend v21
+ * TT PRICE WARS — backend v22
  *
  * v21: `POST {type:"bulkSachet"}` — the grid-review bulk tagger for column P. Someone is about
  * to tag ~15,000 products; doing that through updateProduct() (a TextFinder lookup plus a
@@ -11,34 +11,14 @@
  * made one at a time; it is forced off for the value:"" undo case, which must be able to clear
  * whatever it just set.
  *
- * v20: Products gained column P, isSachet — "YES" | "NO" | "" (blank means NOT YET REVIEWED,
- * never treat it as NO). New `action=sachetqueue` serves the tagging UI's work queue: products
- * still blank in P, optionally restricted to one category_1, with a heuristic `hint` that is
- * display-only and is never written back. needsInfo() now also surfaces the raw value (for the
- * เติมข้อมูลสินค้า form) and buildAnalysis() appends an encoded `sachet` (0/1/2) to the END of
- * each `p` row (for the viewer's packaging filter), so every earlier index keeps its meaning.
- *
- * v19: "เติมรหัสร้านที่ยังว่าง" menu item. A shop typed into the Stores tab by hand gets a name
- * but no store_id, and every endpoint requires column A — so the shop was invisible to all
- * three apps with no error anywhere. This fills the gap without touching existing ids.
- *
- * v18: buildAnalysis() reports barcode collisions instead of silently overwriting. Two Products
- * rows normalising to the same key (a UPC-A and its zero-padded EAN-13, say) are the same
- * product entered twice; the first row now wins deterministically and the pair is reported in
- * the payload's `dupes` array and the execution log, so someone can merge them.
- *
- * Serves three static pages from one Sheet: index.html (phone capture), admin.html (desk
- * entry + product/store admin), viewer.html (analysis).
- *
- * v16: buildAnalysis() now also emits `o`, the latest price per (product, store, flag) —
- * [pIdx, sIdx, price, flagIdx] — so the viewer can filter by channel and by individual store,
- * neither of which is possible from the per-product aggregates (`ref`/`lo`/`hi`/`ns`/`pd`)
- * alone. Built from the SAME per-store accumulator that already produces those aggregates, not
- * a second read of Observations, so the two can never drift apart.
- *
- * v14: Observations gained column I, min_qty, for the new `wholesale` flag value (a shop's
- * bulk-selling price; the other flags never carry it). And ทุนส่ง (wholesale COST, from the
- * Tunsong tab) got two new read endpoints — see "TUNSONG IS SENSITIVE" below.
+ * v22: user accounts (Users tab), viewer/admin sessions, password auth. GET summary/images/
+ * rebuild/tunsong now require a viewer session (`t`); tunsong additionally requires the user's
+ * can_see_tunsong = YES. GET tunsonglist/needsinfo/sachetqueue/vocab and POST tunsong/
+ * updateProduct/bulkSachet/updateStore/createStore/uploadImage require an admin session (`a` on
+ * GET, body `admin` on POST). obs, lookup, prices, stores and psearch are unchanged and stay
+ * open — the phone app never logs in. login/setPassword/logout/adminLogin are handled BEFORE
+ * doPost's script lock, since password hashing takes real time and must never stall a price
+ * save coming off a phone.
  *
  * DEPLOYING — keeps the same /exec URL, which every page has hard-coded:
  *   Editor → paste → Save → Deploy → Manage deployments → ✏️ → Version: New version → Deploy
@@ -123,6 +103,8 @@ function onOpen() {
     .addItem("เรียงลำดับสินค้ากลับเป็นเดิม", "restoreProductOrder")
     .addItem("อัปเดตข้อมูลวิเคราะห์", "runBuildAnalysis")
     .addItem("เติมรหัสร้านที่ยังว่าง", "fillMissingStoreIds")
+    .addItem("ตั้งรหัสแอดมิน", "runSetAdminKey")
+    .addItem("ออกจากระบบทุกเครื่อง", "runLogoutEverywhere")
     .addToUi();
 }
 
@@ -182,6 +164,47 @@ function toastOrLog(msg) {
   try { SpreadsheetApp.getUi().alert(msg); } catch (err) {}
 }
 
+/**
+ * Menu entry point: prompts for a new admin key twice (must match, ≥ 8 chars) and stores its
+ * hash. Unlike runBuildAnalysis()'s "log either way, alert only when there is a UI" pattern,
+ * this genuinely cannot proceed without prompts — there is nothing useful to do from the
+ * editor's Run button, so it just logs that and stops.
+ */
+function runSetAdminKey() {
+  let ui;
+  try { ui = SpreadsheetApp.getUi(); } catch (err) { Logger.log("ตั้งรหัสแอดมิน: run from the Sheet menu, not the editor"); return; }
+
+  const first = ui.prompt("ตั้งรหัสแอดมิน", "พิมพ์รหัสผ่านใหม่ (อย่างน้อย 8 ตัวอักษร):", ui.ButtonSet.OK_CANCEL);
+  if (first.getSelectedButton() !== ui.Button.OK) return;
+  const key1 = first.getResponseText();
+  if (key1.length < 8) { ui.alert("รหัสสั้นเกินไป ต้องมีอย่างน้อย 8 ตัวอักษร"); return; }
+
+  const second = ui.prompt("ตั้งรหัสแอดมิน", "พิมพ์รหัสผ่านอีกครั้งเพื่อยืนยัน:", ui.ButtonSet.OK_CANCEL);
+  if (second.getSelectedButton() !== ui.Button.OK) return;
+  if (second.getResponseText() !== key1) { ui.alert("รหัสทั้งสองครั้งไม่ตรงกัน ลองใหม่อีกครั้ง"); return; }
+
+  storeAdminKey(key1);
+  ui.alert("ตั้งรหัสแอดมินเรียบร้อยแล้ว");
+}
+
+/** Hashes and stores a new admin key. Factored out of runSetAdminKey() so a test harness (or
+ *  anything else) can set it without going through ui.prompt(). Every existing admin session's
+ *  kv stops matching ADMIN_KEY_HASH the moment this runs, so changing the key logs out every
+ *  computer on its next check — no separate purge needed here. */
+function storeAdminKey(key) {
+  setAdminKeyHash(hashSecret(String(key), randomSaltHex(), HASH_ITERATIONS));
+}
+
+/** Menu entry point: confirms, then deletes every viewer and admin session. */
+function runLogoutEverywhere() {
+  let ui;
+  try { ui = SpreadsheetApp.getUi(); } catch (err) { Logger.log("ออกจากระบบทุกเครื่อง: run from the Sheet menu, not the editor"); return; }
+  const resp = ui.alert("ออกจากระบบทุกเครื่อง", "ยืนยันหรือไม่? ทุกคนจะต้องเข้าสู่ระบบใหม่", ui.ButtonSet.YES_NO);
+  if (resp !== ui.Button.YES) return;
+  purgeAllSessions();
+  ui.alert("ออกจากระบบทุกเครื่องเรียบร้อยแล้ว");
+}
+
 /** Restores the original Products order after someone sorts the tab. Convenience only —
  *  nothing depends on row order. */
 function restoreProductOrder() {
@@ -194,21 +217,62 @@ function restoreProductOrder() {
 }
 
 /* ================= GET ================= */
+/** Thin wrapper so a Users-tab setup problem (missing header column) surfaces as a JSON error
+ *  instead of an Apps Script error page — doGetInner() is free to let such errors propagate. */
 function doGet(e) {
-  const action = (e && e.parameter && e.parameter.action) || "";
-  if (action === "summary") return summary();
-  if (action === "images") return imagesPayload();
-  if (action === "rebuild") return rebuild();
-  if (action === "lookup") return lookup(e.parameter.barcode);
-  if (action === "prices") return pricesEndpoint(e.parameter.barcode);
+  try {
+    return doGetInner(e);
+  } catch (err) {
+    return json({ ok: false, error: String(err && err.message ? err.message : err) });
+  }
+}
+
+/**
+ * Every GET action, gated per the auth contract's "Who can call what" table:
+ *  - users/me/adminme: open — they ARE the auth system.
+ *  - summary/images/rebuild: need a viewer session (`t`).
+ *  - tunsong: needs a viewer session AND that user's can_see_tunsong = YES.
+ *  - tunsonglist/needsinfo/sachetqueue/vocab: need an admin session (`a`).
+ *  - lookup/prices/stores/psearch: open, unchanged — the phone app never logs in.
+ */
+function doGetInner(e) {
+  const p = (e && e.parameter) || {};
+  const action = p.action || "";
+
+  // ---- auth endpoints: these ARE the gate, never gated themselves ----
+  if (action === "users") return usersEndpoint();
+  if (action === "me") return meEndpoint(p.t);
+  if (action === "adminme") return adminMeEndpoint(p.a);
+
+  // ---- viewer-session-gated ----
+  if (action === "summary" || action === "images" || action === "rebuild" || action === "tunsong") {
+    const viewer = validateViewerSession(p.t);
+    if (!viewer) return json({ ok: false, auth: "login_required" });
+    if (action === "tunsong") {
+      if (!viewer.can_see_tunsong) return json({ ok: false, auth: "forbidden" });
+      return tunsongEndpoint(p.barcode);
+    }
+    if (action === "summary") return summary();
+    if (action === "images") return imagesPayload();
+    return rebuild();
+  }
+
+  // ---- admin-session-gated ----
+  if (action === "tunsonglist" || action === "needsinfo" || action === "sachetqueue" || action === "vocab") {
+    if (!validateAdminSession(p.a)) return json({ ok: false, auth: "admin_required" });
+    if (action === "tunsonglist") return tunsongList(p.limit);
+    if (action === "needsinfo") return needsInfo(p.limit);
+    if (action === "sachetqueue") return sachetQueue(p.limit, p.c1);
+    return vocab();
+  }
+
+  // ---- open: unchanged behaviour, the phone app relies on it ----
+  if (action === "lookup") return lookup(p.barcode);
+  if (action === "prices") return pricesEndpoint(p.barcode);
   if (action === "stores") return stores();
-  if (action === "vocab") return vocab();
-  if (action === "needsinfo") return needsInfo(e.parameter.limit);
-  if (action === "psearch") return psearch(e.parameter.q, e.parameter.brand, e.parameter.limit);
-  if (action === "tunsong") return tunsongEndpoint(e.parameter.barcode);
-  if (action === "tunsonglist") return tunsongList(e.parameter.limit);
-  if (action === "sachetqueue") return sachetQueue(e.parameter.limit, e.parameter.c1);
-  return json({ ok: true, msg: "TT Price Wars API v21" });
+  if (action === "psearch") return psearch(p.q, p.brand, p.limit);
+
+  return json({ ok: true, msg: "TT Price Wars API v22" });
 }
 
 /** Every form a barcode may appear in, since the Sheet stores them as numbers. */
@@ -909,17 +973,563 @@ function installAnalysisTrigger() {
   ScriptApp.newTrigger("buildAnalysis").timeBased().atHour(3).everyDays(1).create();
 }
 
+/* ================= AUTH ================= */
+/**
+ * Users tab, sessions (viewer + admin), password hashing and the login/setPassword/logout/
+ * adminLogin endpoints. See CONTRACT.md at design time for the full spec; the short version:
+ *
+ *  - Users tab columns are read BY HEADER NAME (usersHeaderMap), never by position — the tab is
+ *    hand-maintained and column order may change.
+ *  - The parsed Users tab is cached (getUsersMap/USERS_CACHE_KEY) for USERS_CACHE_SEC so a
+ *    session check never costs a Sheets read on the common path; writes that change a user's
+ *    row (writePasswordAndClearCode, eraseResetCode) invalidate it immediately, so only an edit
+ *    made BY HAND in the Sheet is subject to the ≤2min staleness window.
+ *  - Sessions are PropertiesService script properties (`sess:`/`adm:`), fronted by CacheService
+ *    for speed; readSessionRecord()/readAdminSessionRecord() check cache first.
+ *  - login/setPassword/logout/adminLogin are dispatched from doPost() BEFORE the script lock —
+ *    see the doPost() comment.
+ */
+
+const HASH_ITERATIONS = 2000;                 // iterations baked into every new hash string
+const SESSION_MS = 30 * 24 * 60 * 60 * 1000;  // viewer session lifetime — 30 days
+const ADMIN_SESSION_MS = 30 * 24 * 60 * 60 * 1000; // admin session lifetime — 30 days
+const SESSION_CACHE_SEC = 300;                // CacheService front for session lookups
+const USERS_SHEET = "Users";
+const USERS_CACHE_KEY = "usersmap";
+const USERS_CACHE_SEC = 120;                  // ≤2 min — a Users-tab edit takes effect within this
+const USERS_REQUIRED_HEADERS = ["user_id", "name", "password_hash", "reset_code",
+                                 "can_see_tunsong", "active", "last_login"];
+const LOGIN_MAX_TRIES = 5;
+const LOGIN_WINDOW_SEC = 15 * 60;             // 15 min window for both login and adminLogin
+const RESET_CODE_MAX_TRIES = 5;
+const RESET_CODE_WINDOW_SEC = 6 * 60 * 60;    // 6h window for wrong reset-code attempts
+const ADMIN_KEY_PROP = "ADMIN_KEY_HASH";      // script property holding the hashed admin key
+
+/* ---- small shared helpers ---- */
+
+function normalizeUserId(v) {
+  return String(v == null ? "" : v).trim().toLowerCase();
+}
+
+/** YES/Y/TRUE/checkbox-true/1 (case-insensitive) — the Sheet's several ways of saying "true". */
+function truthyFlag(v) {
+  if (v === true || v === 1) return true;
+  const s = String(v == null ? "" : v).trim().toUpperCase();
+  return s === "YES" || s === "Y" || s === "TRUE" || s === "1";
+}
+
+/** Digits only, left-padded to 4. The Sheet turns "0482" into the number 482, so this must
+ *  undo that; anything that still isn't exactly 4 digits afterwards (blank, too long, non-
+ *  numeric) means "no code", never a partial match. */
+function normalizeResetCode(v) {
+  if (v == null || v === "") return "";
+  const digits = String(v).replace(/\D/g, "");
+  if (!digits || digits.length > 4) return "";
+  return ("0000" + digits).slice(-4);
+}
+
+function minutesLeft(ms) { return Math.max(1, Math.ceil(ms / 60000)); }
+
+/* ---- rate-limit counters (CacheService only — resetting the cache resets the limiter, which
+   is an acceptable trade for not touching the Sheet on every failed attempt) ---- */
+
+/** Reads a counter without incrementing it — used to check "already locked?" before doing any
+ *  work. {n:0, msLeft:0} when there is no active window. */
+function peekFailCounter(key) {
+  const raw = CacheService.getScriptCache().get(key);
+  if (!raw) return { n: 0, msLeft: 0 };
+  try {
+    const v = JSON.parse(raw);
+    const left = v.exp - Date.now();
+    if (left > 0) return { n: v.n, msLeft: left };
+  } catch (err) { /* corrupt cache entry — treat as no window */ }
+  return { n: 0, msLeft: 0 };
+}
+
+/** Increments a counter, starting a fresh windowSec-long window on the first failure and
+ *  keeping the SAME expiry on every failure after that (so the window doesn't keep sliding
+ *  forward forever under a sustained attack). */
+function bumpFailCounter(key, windowSec) {
+  const cache = CacheService.getScriptCache();
+  const now = Date.now();
+  let n = 0, exp = now + windowSec * 1000;
+  const raw = cache.get(key);
+  if (raw) {
+    try {
+      const v = JSON.parse(raw);
+      if (v.exp > now) { n = v.n; exp = v.exp; }
+    } catch (err) { /* corrupt cache entry — start over */ }
+  }
+  n++;
+  cache.put(key, JSON.stringify({ n: n, exp: exp }), Math.max(1, Math.ceil((exp - now) / 1000)));
+  return { n: n, msLeft: exp - now };
+}
+
+function clearFailCounter(key) { CacheService.getScriptCache().remove(key); }
+
+/* ---- hashing: SHA-256, salted, iterated. Format "v1$<iterations>$<saltHex>$<hashHex>". ---- */
+
+function toHex(bytes) {
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) {
+    const h = (bytes[i] & 0xff).toString(16);
+    s += (h.length === 1 ? "0" + h : h);
+  }
+  return s;
+}
+
+function hexToBytes(hex) {
+  const out = [];
+  for (let i = 0; i < hex.length; i += 2) out.push(parseInt(hex.substr(i, 2), 16));
+  return out;
+}
+
+/** 16 random bytes as 32 hex chars. Utilities.getUuid() is Apps Script's only source of
+ *  randomness suitable for this — a v4 UUID is 32 hex digits once the dashes are stripped, i.e.
+ *  exactly 16 bytes. */
+function randomSaltHex() {
+  return Utilities.getUuid().replace(/-/g, "");
+}
+
+/**
+ * iterations rounds of SHA-256, each one hashing (previous digest bytes ++ password bytes).
+ * Round 1 uses the salt bytes in place of "previous digest". Returns the full stored string,
+ * not just the digest, so verifySecret() only ever needs the stored string.
+ */
+function hashSecret(secret, saltHex, iterations) {
+  const passwordBytes = Utilities.newBlob(String(secret)).getBytes();
+  let digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,
+    hexToBytes(saltHex).concat(passwordBytes));
+  for (let i = 1; i < iterations; i++) {
+    digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, digest.concat(passwordBytes));
+  }
+  return "v1$" + iterations + "$" + saltHex + "$" + toHex(digest);
+}
+
+/** Recomputes the hash with the stored salt/iterations and compares the full string. */
+function verifySecret(secret, stored) {
+  if (!stored) return false;
+  const parts = String(stored).split("$");
+  if (parts.length !== 4 || parts[0] !== "v1") return false;
+  const iterations = parseInt(parts[1], 10);
+  const saltHex = parts[2];
+  if (!iterations || !saltHex) return false;
+  return hashSecret(secret, saltHex, iterations) === stored;
+}
+
+/* ---- Users tab: read by header name, cached; written by header-resolved column ---- */
+
+function getUsersSheet() { return SpreadsheetApp.getActiveSpreadsheet().getSheetByName(USERS_SHEET); }
+
+/** header text (trimmed, lowercased) -> 0-based column index. Throws a clear, user-facing
+ *  Error the moment a required column is missing — every auth call surfaces this rather than a
+ *  raw undefined-column crash. */
+function usersHeaderMap(sheet) {
+  const last = sheet.getLastColumn();
+  const headers = last > 0 ? sheet.getRange(1, 1, 1, last).getValues()[0] : [];
+  const map = {};
+  headers.forEach(function (h, i) {
+    const k = String(h || "").trim().toLowerCase();
+    if (k) map[k] = i;
+  });
+  USERS_REQUIRED_HEADERS.forEach(function (name) {
+    if (!(name in map)) throw new Error("Users tab missing column: " + name);
+  });
+  return map;
+}
+
+function rowToUser(headerMap, row) {
+  function cell(name) { return row[headerMap[name]]; }
+  return {
+    user_id: String(cell("user_id") || "").trim(),
+    name: String(cell("name") || "").trim(),
+    password_hash: String(cell("password_hash") || "").trim(),
+    reset_code: cell("reset_code"),
+    can_see_tunsong: cell("can_see_tunsong"),
+    active: cell("active"),
+    last_login: cell("last_login")
+  };
+}
+
+/** The whole Users tab, parsed once and cached for USERS_CACHE_SEC — normalized user_id (lower-
+ *  cased) -> user object. Cache holds plain JSON (no row numbers: a WRITE always re-finds its
+ *  row fresh via withUsersRow, since a cached row number could be stale). */
+function getUsersMap(fresh) {
+  const cache = CacheService.getScriptCache();
+  const hit = fresh ? null : cache.get(USERS_CACHE_KEY);
+  if (hit) {
+    try { return JSON.parse(hit); } catch (err) { /* fall through and re-read */ }
+  }
+  const sheet = getUsersSheet();
+  if (!sheet) throw new Error("Users tab not found");
+  const headerMap = usersHeaderMap(sheet);   // may throw — let it propagate to the caller
+  const last = sheet.getLastRow();
+  const map = {};
+  if (last > 1) {
+    sheet.getRange(2, 1, last - 1, sheet.getLastColumn()).getValues().forEach(function (row) {
+      const u = rowToUser(headerMap, row);
+      if (u.user_id) map[normalizeUserId(u.user_id)] = u;
+    });
+  }
+  // A few users is tiny JSON — nowhere near CacheService's ~100KB per-value limit — but this is
+  // cheap insurance: serving uncached beats failing the request if that ever changes.
+  try { cache.put(USERS_CACHE_KEY, JSON.stringify(map), USERS_CACHE_SEC); } catch (err) {}
+  return map;
+}
+
+function invalidateUsersCache() { CacheService.getScriptCache().remove(USERS_CACHE_KEY); }
+
+/** Finds userId's row FRESH (never from the users-map cache — a write must never land on a
+ *  stale row) and hands (sheet, headerMap, rowNumber) to fn. No-op if not found. Throws the
+ *  same missing-column Error usersHeaderMap() throws. */
+function withUsersRow(userId, fn) {
+  const sheet = getUsersSheet();
+  if (!sheet) throw new Error("Users tab not found");
+  const headerMap = usersHeaderMap(sheet);
+  const last = sheet.getLastRow();
+  if (last < 2) return false;
+  const key = normalizeUserId(userId);
+  const ids = sheet.getRange(2, headerMap["user_id"] + 1, last - 1, 1).getValues();
+  for (let i = 0; i < ids.length; i++) {
+    if (String(ids[i][0] || "").trim().toLowerCase() === key) {
+      fn(sheet, headerMap, i + 2);
+      return true;
+    }
+  }
+  return false;
+}
+
+function writeUsersCell(sheet, headerMap, row, headerName, value) {
+  sheet.getRange(row, headerMap[headerName] + 1).setValue(value);
+}
+
+/** Password reset / setPassword success: new hash, cleared reset_code, stamped last_login. */
+function writePasswordAndClearCode(userId, hash) {
+  withUsersRow(userId, function (sheet, headerMap, row) {
+    writeUsersCell(sheet, headerMap, row, "password_hash", hash);
+    writeUsersCell(sheet, headerMap, row, "reset_code", "");
+    writeUsersCell(sheet, headerMap, row, "last_login", new Date());
+  });
+  invalidateUsersCache();
+}
+
+/** Successful login: stamps last_login only. Not invalidating the users-map cache here is
+ *  deliberate — last_login isn't read by any auth decision, so there is nothing to invalidate. */
+function writeLastLogin(userId) {
+  withUsersRow(userId, function (sheet, headerMap, row) {
+    writeUsersCell(sheet, headerMap, row, "last_login", new Date());
+  });
+}
+
+/** 5th wrong reset code: erase the cell so it can't be guessed further. */
+function eraseResetCode(userId) {
+  withUsersRow(userId, function (sheet, headerMap, row) {
+    writeUsersCell(sheet, headerMap, row, "reset_code", "");
+  });
+  invalidateUsersCache();
+}
+
+/* ---- sessions: PropertiesService is the source of truth, CacheService fronts it ---- */
+
+function newToken() { return (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, ""); }
+
+function createSession(userId, passwordHash) {
+  const token = newToken();
+  const exp = Date.now() + SESSION_MS;
+  const rec = { u: userId, exp: exp, pv: String(passwordHash || "").slice(0, 16) };
+  PropertiesService.getScriptProperties().setProperty("sess:" + token, JSON.stringify(rec));
+  try { CacheService.getScriptCache().put("sess:" + token, JSON.stringify(rec), SESSION_CACHE_SEC); } catch (err) {}
+  return { token: token, exp: exp };
+}
+
+function readSessionRecord(token) {
+  if (!token) return null;
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get("sess:" + token);
+  if (hit) { try { return JSON.parse(hit); } catch (err) {} }
+  const raw = PropertiesService.getScriptProperties().getProperty("sess:" + token);
+  if (!raw) return null;
+  let rec;
+  try { rec = JSON.parse(raw); } catch (err) { return null; }
+  try { cache.put("sess:" + token, raw, SESSION_CACHE_SEC); } catch (err) {}
+  return rec;
+}
+
+function deleteSession(token) {
+  if (!token) return;
+  CacheService.getScriptCache().remove("sess:" + token);
+  PropertiesService.getScriptProperties().deleteProperty("sess:" + token);
+}
+
+/**
+ * A viewer session is valid only when: not expired, the user still exists and is active, AND
+ * the user's CURRENT password_hash still starts with the pv captured at login — so a password
+ * reset invalidates every other session for that user the moment it's checked, no explicit
+ * logout-elsewhere step needed. Users-tab data comes from getUsersMap(), so a manual Sheet edit
+ * (deactivating someone) takes up to USERS_CACHE_SEC to take effect; this function's OWN writes
+ * (via writePasswordAndClearCode) invalidate that cache immediately.
+ */
+function validateViewerSession(token) {
+  const rec = readSessionRecord(token);
+  if (!rec || !rec.exp || rec.exp < Date.now()) return null;
+  const users = getUsersMap();
+  const u = users[normalizeUserId(rec.u)];
+  if (!u || !truthyFlag(u.active)) return null;
+  if (String(u.password_hash || "").slice(0, 16) !== rec.pv) return null;
+  return { user_id: u.user_id, name: u.name, can_see_tunsong: truthyFlag(u.can_see_tunsong) };
+}
+
+function getAdminKeyHash() { return PropertiesService.getScriptProperties().getProperty(ADMIN_KEY_PROP) || ""; }
+function setAdminKeyHash(hash) { PropertiesService.getScriptProperties().setProperty(ADMIN_KEY_PROP, hash); }
+
+function createAdminSession() {
+  const token = newToken();
+  const exp = Date.now() + ADMIN_SESSION_MS;
+  const rec = { exp: exp, kv: getAdminKeyHash().slice(0, 16) };
+  PropertiesService.getScriptProperties().setProperty("adm:" + token, JSON.stringify(rec));
+  try { CacheService.getScriptCache().put("adm:" + token, JSON.stringify(rec), SESSION_CACHE_SEC); } catch (err) {}
+  return { token: token, exp: exp };
+}
+
+function readAdminSessionRecord(token) {
+  if (!token) return null;
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get("adm:" + token);
+  if (hit) { try { return JSON.parse(hit); } catch (err) {} }
+  const raw = PropertiesService.getScriptProperties().getProperty("adm:" + token);
+  if (!raw) return null;
+  let rec;
+  try { rec = JSON.parse(raw); } catch (err) { return null; }
+  try { cache.put("adm:" + token, raw, SESSION_CACHE_SEC); } catch (err) {}
+  return rec;
+}
+
+function deleteAdminSession(token) {
+  CacheService.getScriptCache().remove("adm:" + token);
+  PropertiesService.getScriptProperties().deleteProperty("adm:" + token);
+}
+
+/** Valid only when not expired AND ADMIN_KEY_HASH still starts with the kv captured at login —
+ *  so rotating the key logs out every admin computer the moment it's next checked. */
+function validateAdminSession(token) {
+  const rec = readAdminSessionRecord(token);
+  if (!rec || !rec.exp || rec.exp < Date.now()) return null;
+  const kv = getAdminKeyHash().slice(0, 16);
+  if (!kv || kv !== rec.kv) return null;
+  return { exp: rec.exp };
+}
+
+/** Deletes every expired sess:/adm: property. Called opportunistically from login/adminLogin,
+ *  never on a hot path — reading every script property is fine at "once per login attempt"
+ *  frequency but would not be at "once per request". */
+function purgeExpiredSessions() {
+  const props = PropertiesService.getScriptProperties();
+  const all = props.getProperties();
+  const now = Date.now();
+  Object.keys(all).forEach(function (key) {
+    if (key.indexOf("sess:") !== 0 && key.indexOf("adm:") !== 0) return;
+    try {
+      const rec = JSON.parse(all[key]);
+      if (!rec.exp || rec.exp < now) props.deleteProperty(key);
+    } catch (err) { props.deleteProperty(key); }
+  });
+}
+
+/** "ออกจากระบบทุกเครื่อง" — deletes every session, not just expired ones. Clears the matching
+ *  CacheService entries too (chunked, same pattern as bulkSachet's cache cleanup) so a cached
+ *  session record can't keep validating after its property is gone. */
+function purgeAllSessions() {
+  const props = PropertiesService.getScriptProperties();
+  const all = props.getProperties();
+  const keys = Object.keys(all).filter(function (k) { return k.indexOf("sess:") === 0 || k.indexOf("adm:") === 0; });
+  keys.forEach(function (k) { props.deleteProperty(k); });
+  const cache = CacheService.getScriptCache();
+  for (let i = 0; i < keys.length; i += 200) cache.removeAll(keys.slice(i, i + 200));
+}
+
+/* ---- GET endpoints that ARE the auth system ---- */
+
+// usersEndpoint, handleLogin and handleSetPassword read the tab FRESH: the admin has typically
+// just added a user or typed a reset code by hand, and a 2-minute-stale cache would hide the new
+// user or reject the new code (burning its tries). Session checks keep using the cache.
+function usersEndpoint() {
+  const users = getUsersMap(true);
+  const list = Object.keys(users).map(function (k) { return users[k]; })
+    .filter(function (u) { return truthyFlag(u.active); })
+    .map(function (u) { return { user_id: u.user_id, name: u.name }; })
+    .sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+  return json({ ok: true, users: list });
+}
+
+function meEndpoint(token) {
+  const viewer = validateViewerSession(token);
+  if (!viewer) return json({ ok: false, auth: "login_required" });
+  return json({ ok: true, user_id: viewer.user_id, name: viewer.name, can_see_tunsong: viewer.can_see_tunsong });
+}
+
+function adminMeEndpoint(token) {
+  const admin = validateAdminSession(token);
+  if (!admin) return json({ ok: false, auth: "admin_required" });
+  return json({ ok: true, expires: admin.exp });
+}
+
+/* ---- POST auth endpoints — dispatched by doPost() BEFORE the script lock ---- */
+
+function handleLogin(d) {
+  purgeExpiredSessions();
+  const userId = normalizeUserId(d.user_id);
+  const lockKey = "lf:" + userId;
+  const lock = peekFailCounter(lockKey);
+  if (lock.n >= LOGIN_MAX_TRIES) return { ok: false, error: "locked", retry_after_min: minutesLeft(lock.msLeft) };
+
+  const users = getUsersMap(true);
+  const u = users[userId];
+  const active = !!u && truthyFlag(u.active);
+
+  // A user that exists, is active, but has no password yet is a DIFFERENT failure from a wrong
+  // password — it tells the client "use the reset code", not "try again" — and it must not be
+  // possible to land here by guessing passwords against an unknown/inactive user.
+  if (active && !u.password_hash) return { ok: false, error: "no_password" };
+
+  const validPassword = active && u.password_hash && verifySecret(String(d.password || ""), u.password_hash);
+  if (!validPassword) {
+    const bumped = bumpFailCounter(lockKey, LOGIN_WINDOW_SEC);
+    if (bumped.n >= LOGIN_MAX_TRIES) return { ok: false, error: "locked", retry_after_min: minutesLeft(bumped.msLeft) };
+    // Same message whether the user is unknown, inactive, or just wrong on the password —
+    // never leak which one it was.
+    return { ok: false, error: "bad_credentials" };
+  }
+
+  clearFailCounter(lockKey);
+  writeLastLogin(u.user_id);
+  const session = createSession(u.user_id, u.password_hash);
+  return { ok: true, token: session.token, user_id: u.user_id, name: u.name,
+           can_see_tunsong: truthyFlag(u.can_see_tunsong), expires: session.exp };
+}
+
+function handleSetPassword(d) {
+  purgeExpiredSessions();
+  const userId = normalizeUserId(d.user_id);
+  const password = String(d.password || "");
+  if (password.length < 6) return { ok: false, error: "weak_password" };
+
+  const users = getUsersMap(true);
+  const u = users[userId];
+  const active = !!u && truthyFlag(u.active);
+  const storedCode = active ? normalizeResetCode(u.reset_code) : "";
+  const inputCode = normalizeResetCode(d.reset_code);
+  const matches = !!(storedCode && inputCode && storedCode === inputCode);
+
+  const codeKey = "rf:" + userId;
+  if (!matches) {
+    const bumped = bumpFailCounter(codeKey, RESET_CODE_WINDOW_SEC);
+    if (bumped.n >= RESET_CODE_MAX_TRIES) {
+      eraseResetCode(userId);
+      clearFailCounter(codeKey);
+      return { ok: false, error: "code_erased" };
+    }
+    return { ok: false, error: "bad_code", tries_left: RESET_CODE_MAX_TRIES - bumped.n };
+  }
+
+  clearFailCounter(codeKey);
+  const hash = hashSecret(password, randomSaltHex(), HASH_ITERATIONS);
+  writePasswordAndClearCode(u.user_id, hash);
+  const session = createSession(u.user_id, hash);
+  return { ok: true, token: session.token, user_id: u.user_id, name: u.name,
+           can_see_tunsong: truthyFlag(u.can_see_tunsong), expires: session.exp };
+}
+
+function handleLogout(d) {
+  deleteSession(d.token);
+  return { ok: true };   // always ok, per contract — nothing to leak either way
+}
+
+function handleAdminLogin(d) {
+  purgeExpiredSessions();
+  const storedHash = getAdminKeyHash();
+  if (!storedHash) return { ok: false, error: "no_admin_key" };
+
+  const lockKey = "af";   // global — there is only one admin key, not one per caller
+  const lock = peekFailCounter(lockKey);
+  if (lock.n >= LOGIN_MAX_TRIES) return { ok: false, error: "locked", retry_after_min: minutesLeft(lock.msLeft) };
+
+  if (!verifySecret(String(d.key || ""), storedHash)) {
+    const bumped = bumpFailCounter(lockKey, LOGIN_WINDOW_SEC);
+    if (bumped.n >= LOGIN_MAX_TRIES) return { ok: false, error: "locked", retry_after_min: minutesLeft(bumped.msLeft) };
+    return { ok: false, error: "bad_key" };
+  }
+
+  clearFailCounter(lockKey);
+  const session = createAdminSession();
+  return { ok: true, admin_token: session.token, expires: session.exp };
+}
+
+/** Runs an auth POST handler and turns a thrown Error (e.g. usersHeaderMap()'s missing-column
+ *  Error) into the same {ok:false, error} shape doPost()'s own catch uses, instead of an
+ *  Apps Script error page. */
+function runAuthPost(fn) {
+  try {
+    return json(fn());
+  } catch (err) {
+    return json({ ok: false, error: String(err && err.message ? err.message : err) });
+  }
+}
+
+/** POST types listed in the contract's admin row. `obs` (and its new_store/new_product side
+ *  effects) is deliberately absent — it stays open for the phone app. */
+function isAdminOnlyType(type) {
+  return type === "tunsong" || type === "updateProduct" || type === "bulkSachet"
+      || type === "updateStore" || type === "createStore" || type === "uploadImage";
+}
+
 /* ================= POST ================= */
+/**
+ * login/setPassword/logout/adminLogin are dispatched here, BEFORE the script lock is taken —
+ * setPassword and login both hash a password (HASH_ITERATIONS rounds of SHA-256), which takes
+ * real time, and doPost's lock exists to serialize Sheet writes, not to serialize hashing. Any
+ * of these four sitting behind lock.waitLock() would make a price save typed on a phone in a
+ * shop wait behind someone else's login on the far side of the country. setPassword's own write
+ * (password_hash + reset_code + last_login, all on one row) is small enough to risk without the
+ * lock — a lost race there costs a retry, not corrupted data.
+ *
+ * A single (non-batch) admin-only POST without a valid admin token is refused the same way,
+ * before the lock and before touching the Sheet at all. Inside a batch, the admin token is
+ * checked ONCE up front and then applied per item in the loop below, so `obs` items in a mixed
+ * batch still go through even when the admin token is missing or stale.
+ */
 function doPost(e) {
+  let d;
+  try {
+    d = JSON.parse(e.postData.contents);
+  } catch (err) {
+    return json({ ok: false, error: String(err) });
+  }
+
+  if (d.type === "login") return runAuthPost(function () { return handleLogin(d); });
+  if (d.type === "setPassword") return runAuthPost(function () { return handleSetPassword(d); });
+  if (d.type === "logout") return json(handleLogout(d));
+  if (d.type === "adminLogin") return json(handleAdminLogin(d));
+
+  const isBatch = d.type === "batch" && Array.isArray(d.items);
+  const adminOk = d.admin ? !!validateAdminSession(d.admin) : false;
+
+  if (!isBatch && isAdminOnlyType(d.type) && !adminOk) {
+    return json({ ok: false, auth: "admin_required" });
+  }
+
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
   try {
-    const d  = JSON.parse(e.postData.contents);
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const items = (d.type === "batch" && Array.isArray(d.items)) ? d.items : [d];
+    const items = isBatch ? d.items : [d];
     const ctx = newWriteContext(ss);
-    const results = items.map(function (item) { return writeOne(ss, item, ctx); });
-    const bad = results.filter(function (r) { return r.status === "unknown_type"; });
+    const results = items.map(function (item) {
+      if (isAdminOnlyType(item.type) && !adminOk) {
+        return { id: item.obs_id || item.ts_id || item.barcode || item.store_id || "", status: "admin_required" };
+      }
+      return writeOne(ss, item, ctx);
+    });
+    const bad = results.filter(function (r) { return r.status === "unknown_type" || r.status === "admin_required"; });
     return json({ ok: bad.length === 0, results: results });
   } catch (err) {
     return json({ ok: false, error: String(err) });

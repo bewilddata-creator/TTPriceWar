@@ -238,6 +238,22 @@ footer button:disabled{opacity:.5; cursor:default}
 .progress-sub{font-size:12px; color:var(--mut)}
 .mini-progress{width:70px; height:6px; background:var(--paper); border:1px solid var(--line); border-radius:99px; overflow:hidden; flex:none}
 .mini-fill{display:block; height:100%; background:var(--tag); width:0%; transition:width .15s}
+/* ---- auth overlay (login / reset password) — same modal shell as #ov/#bmOv (fixed, dim
+   backdrop, centered card) but its own class names (auth-*) since the card holds a form, not
+   a data sheet. Sits above every other overlay (z-index) so a dead session always wins. ---- */
+#authOv{position:fixed; inset:0; background:rgba(23,25,28,.5); z-index:50; display:flex;
+  align-items:center; justify-content:center; overflow:auto; padding:20px 14px}
+.auth-card{width:100%; max-width:360px; background:var(--card); border-radius:18px; padding:22px; box-shadow:var(--shadow)}
+.auth-title{font-size:19px; font-weight:800; margin-bottom:2px}
+.auth-sub{font-size:12.5px; color:var(--mut); margin-bottom:16px}
+.auth-field{display:block; width:100%; padding:12px 14px; font-size:15px; font-weight:600;
+  border:1.5px solid var(--line); border-radius:12px; background:var(--paper); margin-bottom:10px}
+.auth-field:focus{outline:none; border-color:var(--ink)}
+.auth-btn{width:100%; padding:13px; border-radius:12px; background:var(--ink); color:#fff; font-weight:700; font-size:14.5px}
+.auth-btn:disabled{opacity:.6; cursor:default}
+.auth-err{min-height:16px; font-size:12.5px; color:var(--warn); margin:8px 2px 0; line-height:1.4}
+.auth-link{display:block; width:100%; text-align:center; margin-top:12px; font-size:12.5px; font-weight:700;
+  color:var(--tag-deep); text-decoration:underline}
 </style>
 </head>
 <body>
@@ -423,12 +439,44 @@ footer button:disabled{opacity:.5; cursor:default}
 <footer>
   <div class="footRow">
     <span id="footInfo">—</span>
+    <!-- shown only once auth is confirmed enabled and a session is active — see renderFooterAuth() -->
+    <span id="footUser" class="hidden"></span>
     <div class="mini-progress hidden" id="miniProgress"><span class="mini-fill" id="miniFill"></span></div>
     <button id="refreshBtn">รีเฟรชข้อมูล</button>
     <button id="rebuildBtn">อัปเดตข้อมูลวิเคราะห์</button>
+    <button id="logoutBtn" class="hidden">ออกจากระบบ</button>
   </div>
   <div class="footHelp">ข้อมูลวิเคราะห์อัปเดตอัตโนมัติทุกคืนเวลา 03:00 น. — ปุ่มนี้สั่งให้อัปเดตทันที</div>
 </footer>
+
+<!-- ---- auth overlay: login + reset-password forms, one #authOv shown/hidden as a whole via
+     the shared .hidden utility class; see bootAuth()/showLoginScreen() in the script. A full-page
+     overlay (z-index above #ov/#bmOv/footer) rather than its own page, so no route/history is
+     needed and it can appear the instant boot() decides a session is required. ---- -->
+<div id="authOv" class="hidden">
+  <div class="auth-card">
+    <div class="auth-title">TT Price Wars</div>
+    <form id="authLoginForm">
+      <div class="auth-sub">เข้าสู่ระบบเพื่อดูข้อมูลวิเคราะห์</div>
+      <select class="auth-field" id="authUser"></select>
+      <input class="auth-field" type="password" id="authPass" placeholder="รหัสผ่าน" autocomplete="current-password">
+      <button type="submit" class="auth-btn" id="authLoginBtn">เข้าสู่ระบบ</button>
+      <div class="auth-err" id="authErr"></div>
+      <button type="button" class="auth-link hidden" id="authRetryBtn">ลองใหม่</button>
+      <button type="button" class="auth-link" id="authToReset">มีรหัสรีเซ็ต / ตั้งรหัสผ่านใหม่</button>
+    </form>
+    <form id="authResetForm" class="hidden">
+      <div class="auth-sub">ตั้งรหัสผ่านใหม่ด้วยรหัสรีเซ็ตจากแอดมิน</div>
+      <select class="auth-field" id="authResetUser"></select>
+      <input class="auth-field" type="text" inputmode="numeric" maxlength="4" id="authCode" placeholder="รหัสรีเซ็ต 4 หลัก">
+      <input class="auth-field" type="password" id="authNewPass" placeholder="รหัสผ่านใหม่" autocomplete="new-password">
+      <input class="auth-field" type="password" id="authNewPass2" placeholder="ยืนยันรหัสผ่านใหม่" autocomplete="new-password">
+      <button type="submit" class="auth-btn" id="authSetPassBtn">บันทึกรหัสผ่าน</button>
+      <div class="auth-err" id="authResetErr"></div>
+      <button type="button" class="auth-link" id="authToLogin">กลับ</button>
+    </form>
+  </div>
+</div>
 
 <script type="module">
 import { normBarcode, backupImageUrl } from "./core.js";
@@ -458,24 +506,36 @@ const ls = {
  * (the endpoint this replaced took 60s for 4.65MB and never resolved on a slow link).
  */
 /**
- * Every network call goes through here, with a timeout and one retry.
- *
- * Apps Script latency swings hard: the same endpoint measured 2.1s and 9.6s minutes apart, and
- * cold starts get slower as the Sheet grows. A 12s ceiling was close enough to that spread to
- * abort calls that would have succeeded, and report "failed to load" for something the server
- * answered fine. GETs are retried ONCE — a cold start usually only bites the first attempt.
- *
- * POSTs are never retried here: the outbox owns that, and it tracks obs_id so the backend can
- * recognise a repeat. Retrying a write from two places would be two mechanisms guessing.
+ * The one place `t=<token>` gets appended to a viewer GET (see api()/fetchSummaryStreaming()
+ * below) — every backend GET the viewer makes routes through one of those two, so a call site
+ * can never forget it. A no-op (returns `path` unchanged) whenever no session is stored, which
+ * is exactly today's behaviour against an old, auth-less backend.
  */
+function withToken(path) {
+  return AUTH.token ? path + (path.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(AUTH.token) : path;
+}
+/**
+ * The one place that recognises a dead viewer session from ANY backend response — both api()
+ * and fetchSummaryStreaming() funnel every parsed response through this before handing it back
+ * to their caller, so no call site (summary, images, rebuild, prices, tunsong, me, ...) can miss
+ * it. doLocalLogout() is itself idempotent (a no-op once AUTH.token is already null), so several
+ * in-flight calls all failing at once — summary, images and a detail fetch, say — still only
+ * clears state and shows the login screen once, not once per rejected call.
+ */
+function checkAuthFailure(d) {
+  if (d && d.ok === false && d.auth === 'login_required') doLocalLogout();
+}
 async function api(path, opts = {}, timeout = NET_TIMEOUT) {
   const isGet = !opts.method || String(opts.method).toUpperCase() === 'GET';
+  const fullPath = isGet ? withToken(path) : path;
   for (let attempt = 0; attempt < (isGet ? 2 : 1); attempt++) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeout);
     try {
-      const res = await fetch(API_URL + path, { ...opts, signal: ctl.signal });
-      return await res.json();
+      const res = await fetch(API_URL + fullPath, { ...opts, signal: ctl.signal });
+      const data = await res.json();
+      checkAuthFailure(data);
+      return data;
     } catch (e) {
       if (attempt === 0 && isGet) continue;   // one more go before calling it a failure
       return { ok: false, offline: true };
@@ -509,6 +569,7 @@ function apiFailMsg(d, fallback){
  * Falls back to a plain res.json() when the stream reader isn't available (older browsers).
  */
 async function fetchSummaryStreaming(path, timeout, onProgress){
+  path = withToken(path);   // same single helper api() uses — see its doc comment
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeout);
   let res;
@@ -521,7 +582,9 @@ async function fetchSummaryStreaming(path, timeout, onProgress){
   try {
     if(!res.body || !res.body.getReader){
       if(onProgress) onProgress(0, null, true);
-      return { data: await res.json(), bytes:null };
+      const data = await res.json();
+      checkAuthFailure(data);
+      return { data, bytes:null };
     }
     const estTotal = ls.get('summaryByteEst', null);   // null on the very first load ever
     const reader = res.body.getReader();
@@ -538,7 +601,9 @@ async function fetchSummaryStreaming(path, timeout, onProgress){
     let offset = 0;
     for(const c of chunks){ buf.set(c, offset); offset += c.length; }
     const text = new TextDecoder().decode(buf);
-    return { data: JSON.parse(text), bytes: received };
+    const data = JSON.parse(text);
+    checkAuthFailure(data);
+    return { data, bytes: received };
   } catch(e) {
     return { data: { ok:false, offline: e.name === 'AbortError' }, bytes:null };
   } finally {
@@ -618,6 +683,14 @@ async function idbSet(key, val){
 /* ================= STATE ================= */
 let P = [], PBY_BC = new Map(), STORES = [], curTab = 'search';
 let started = false, detailReq = 0;
+// Auth — AUTH mirrors localStorage('viewerAuth') exactly (see loadAuth()/doLocalLogout()).
+// AUTH_ENABLED reflects what the LATEST ?action=users response told us: false for an old
+// backend (no `users` array — auth not deployed yet, run exactly as before) or before that
+// answer has arrived; true once a `users` array has been seen even once. USERS backs the login
+// screen's dropdowns. authBusy guards both auth forms against a double-submit while a request
+// is in flight (see setAuthBusy()).
+let AUTH = { token:null, user_id:null, name:null, can_see_tunsong:false, expires:0 };
+let AUTH_ENABLED = false, USERS = [], authBusy = false;
 // หมวดหมู่ facets — c1Sel/c2Sel/c3Sel/catSachetSel/catChanSel/catStoreSel are all Sets, one per
 // facet, and every one of them follows the SAME rule: an EMPTY set means "no restriction at this
 // level", never "nothing selected". A mixed model (some facets all-by-default, others
@@ -795,6 +868,7 @@ async function loadImagesBackground(){
       if(delay) await new Promise(resolve => setTimeout(resolve, delay));
       if(SUMMARY_GENERATED !== want) return;
       const d = await api('?action=images', {}, IMAGES_TIMEOUT);
+      if(d && d.auth === 'login_required') return;   // doLocalLogout() already ran
       if(d && d.ok && Array.isArray(d.img) && typeof d.cdn === 'string'){
         useImages(d);
         idbSet('images', d);   // best-effort write; a failure here must never break anything
@@ -832,14 +906,214 @@ function fillOpenDetailImage(){
   renderDetailImage(p);
 }
 
+/* ================= AUTH =================
+   Boot-time gate in front of LOAD (below): decides whether to run straight to boot() (old
+   backend, or a valid stored session) or to block on the login screen first. Everything that
+   happens AFTER a session exists — appending `t`, recognising login_required, the ทุนส่ง gate —
+   lives next to the code it protects (withToken()/checkAuthFailure() above, openDetail() below);
+   this section only owns getting into, and out of, a logged-in state. */
+function loadAuth(){ return ls.get('viewerAuth', { token:null, user_id:null, name:null, can_see_tunsong:false, expires:0 }); }
+function saveAuth(){ ls.set('viewerAuth', AUTH); }
+// An old backend answers an unrecognised action with a plain {ok:true} (see apiFailMsg()'s doc
+// comment) — no `users` array — which is how "auth not deployed yet" is told apart from a new
+// backend that genuinely has zero active users (still an array, just empty).
+function isOldBackendResp(d){ return !!(d && d.ok === true && !Array.isArray(d.users)); }
+/**
+ * Local half of "log out": shared by an expired/revoked session surfacing as login_required from
+ * any call (see checkAuthFailure()) and the explicit ออกจากระบบ button (see logout()). Clears the
+ * session, the cached summary/images (a logged-out viewer must never see another user's data),
+ * and everything currently on screen, then shows the login screen. Idempotent — once AUTH.token
+ * is already null there is nothing left to clear, so a burst of concurrent login_required
+ * responses (summary + images + a detail fetch, say) only runs this once.
+ */
+function doLocalLogout(){
+  if(!AUTH.token) return;
+  AUTH = { token:null, user_id:null, name:null, can_see_tunsong:false, expires:0 };
+  saveAuth();
+  P = []; PBY_BC = new Map(); STORES = []; IMG = null; SUMMARY_GENERATED = null; started = false;
+  idbSet('summary', null); idbSet('images', null);   // best-effort; a failure here can't leave data behind since P/IMG are already cleared
+  if(isDetailOpen()) closeOverlay();
+  if(isBrandModalOpen()) closeBrandModal();
+  renderFooterAuth();
+  showLoginScreen();
+}
+function renderAuthUserOptions(sel){
+  sel.innerHTML = USERS.map(u => `<option value="${esc(u.user_id)}">${esc(u.name)}</option>`).join('');
+}
+function renderFooterAuth(){
+  const show = AUTH_ENABLED && !!AUTH.token;
+  $("footUser").classList.toggle('hidden', !show);
+  if(show) $("footUser").textContent = '👤 ' + AUTH.name;
+  $("logoutBtn").classList.toggle('hidden', !show);
+}
+function setAuthBusy(busy, btn){
+  authBusy = busy;
+  btn.disabled = busy;
+  if(busy){ btn.dataset.label = btn.textContent; btn.innerHTML = '<span class="spin-sm"></span>กำลังดำเนินการ…'; }
+  else btn.textContent = btn.dataset.label || btn.textContent;
+}
+function setAuthErr(id, msg){ $(id).textContent = msg || ''; }
+/** Thai copy for every auth failure shape in the contract; any other server-sent `error` string
+ *  (e.g. a Users-tab misconfiguration message) is shown verbatim via textContent — never innerHTML —
+ *  so nothing it contains can be interpreted as markup. */
+function authErrText(d){
+  if(!d || d.offline) return 'เชื่อมต่ออินเทอร์เน็ตไม่สำเร็จ — เช็คสัญญาณแล้วลองใหม่';
+  const err = d.error;
+  if(err === 'bad_credentials') return 'ชื่อหรือรหัสผ่านไม่ถูกต้อง';
+  if(err === 'no_password') return 'ยังไม่ได้ตั้งรหัสผ่าน — ใช้รหัสรีเซ็ตจากแอดมิน';
+  if(err === 'locked') return `ใส่รหัสผิดหลายครั้ง ลองใหม่ใน ${d.retry_after_min ?? '?'} นาที`;
+  if(err === 'weak_password') return 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร';
+  if(err === 'bad_code') return `รหัสรีเซ็ตไม่ถูกต้อง (เหลืออีก ${d.tries_left ?? '?'} ครั้ง)`;
+  if(err === 'code_erased') return 'รหัสรีเซ็ตถูกยกเลิก ขอรหัสใหม่จากแอดมิน';
+  if(err) return String(err);
+  return 'เกิดข้อผิดพลาด — ลองใหม่';
+}
+function showLoginScreen(opts = {}){
+  $("mainWrap").classList.add('hidden');
+  $("authResetForm").classList.add('hidden');
+  $("authLoginForm").classList.remove('hidden');
+  renderAuthUserOptions($("authUser"));
+  const lastId = ls.get('viewerLastUserId', null);
+  if(lastId && USERS.some(u => u.user_id === lastId)) $("authUser").value = lastId;
+  $("authPass").value = '';
+  $("authRetryBtn").classList.toggle('hidden', !opts.networkError);
+  setAuthErr('authErr', opts.networkError ? 'เชื่อมต่ออินเทอร์เน็ตไม่สำเร็จ — เช็คสัญญาณแล้วลองใหม่' : '');
+  $("authOv").classList.remove('hidden');
+}
+function hideLoginScreen(){
+  $("authOv").classList.add('hidden');
+  $("mainWrap").classList.remove('hidden');
+}
+function switchToReset(user_id, msg){
+  $("authLoginForm").classList.add('hidden');
+  $("authResetForm").classList.remove('hidden');
+  renderAuthUserOptions($("authResetUser"));
+  if(user_id) $("authResetUser").value = user_id;
+  $("authCode").value = ''; $("authNewPass").value = ''; $("authNewPass2").value = '';
+  setAuthErr('authResetErr', msg || '');
+}
+function switchToLogin(){
+  $("authResetForm").classList.add('hidden');
+  $("authLoginForm").classList.remove('hidden');
+  setAuthErr('authErr', '');
+}
+function onAuthSuccess(d){
+  AUTH = { token:d.token, user_id:d.user_id, name:d.name, can_see_tunsong:!!d.can_see_tunsong, expires:d.expires };
+  saveAuth();
+  AUTH_ENABLED = true;
+  hideLoginScreen();
+  renderFooterAuth();
+  boot();   // started is still false here, so this shows full first-load progress, exactly as spec'd
+}
+async function submitLogin(){
+  if(authBusy) return;
+  const user_id = $("authUser").value;
+  if(!user_id) return;
+  const btn = $("authLoginBtn");
+  setAuthBusy(true, btn);
+  const d = await api('', { method:'POST', headers:{'Content-Type':'text/plain'},
+    body: JSON.stringify({ type:'login', user_id, password: $("authPass").value }) }, NET_TIMEOUT);
+  setAuthBusy(false, btn);
+  if(d && d.ok && d.token){ ls.set('viewerLastUserId', user_id); onAuthSuccess(d); return; }
+  if(d && d.error === 'no_password'){
+    ls.set('viewerLastUserId', user_id);
+    switchToReset(user_id, authErrText(d));
+    return;
+  }
+  setAuthErr('authErr', authErrText(d));
+}
+async function submitSetPassword(){
+  if(authBusy) return;
+  const user_id = $("authResetUser").value;
+  if(!user_id) return;
+  if($("authNewPass").value !== $("authNewPass2").value){
+    setAuthErr('authResetErr', 'รหัสผ่านทั้งสองช่องไม่ตรงกัน');
+    return;
+  }
+  const btn = $("authSetPassBtn");
+  setAuthBusy(true, btn);
+  const d = await api('', { method:'POST', headers:{'Content-Type':'text/plain'},
+    body: JSON.stringify({ type:'setPassword', user_id, reset_code: $("authCode").value.trim(), password: $("authNewPass").value }) }, NET_TIMEOUT);
+  setAuthBusy(false, btn);
+  if(d && d.ok && d.token){ ls.set('viewerLastUserId', user_id); onAuthSuccess(d); return; }
+  setAuthErr('authResetErr', authErrText(d));
+}
+function logout(){
+  if(AUTH.token){
+    // Fire-and-forget: the local logout below must happen regardless of whether this lands.
+    api('', { method:'POST', headers:{'Content-Type':'text/plain'}, body: JSON.stringify({ type:'logout', token: AUTH.token }) }, NET_TIMEOUT);
+  }
+  doLocalLogout();
+}
+async function fetchMeBackground(){
+  const d = await api('?action=me', {}, NET_TIMEOUT);
+  if(d && d.ok){
+    AUTH = { ...AUTH, user_id:d.user_id, name:d.name, can_see_tunsong:!!d.can_see_tunsong };
+    saveAuth();
+    renderFooterAuth();
+  }
+  // login_required already ran doLocalLogout() inside api() — nothing else to do here.
+}
+async function retryAuthUsers(){
+  const btn = $("authRetryBtn");
+  setAuthBusy(true, btn);
+  const ur = await api('?action=users', {}, NET_TIMEOUT);
+  setAuthBusy(false, btn);
+  if(isOldBackendResp(ur)){ AUTH_ENABLED = false; hideLoginScreen(); boot(); return; }
+  if(ur && Array.isArray(ur.users)){ USERS = ur.users; showLoginScreen(); return; }
+  showLoginScreen({ networkError: true });
+}
+/**
+ * The boot-time gate. GET users decides old-backend-no-login (run boot() exactly as before) vs
+ * new-backend (need a valid stored session or the login screen). A stored, unexpired token skips
+ * straight to boot() in parallel with the users call — a logged-in viewer's first paint must
+ * never wait on it — while a logged-out viewer waits for it, since only that answer says whether
+ * cached data is even safe to show.
+ */
+async function bootAuth(){
+  AUTH = loadAuth();
+  const tokenValid = !!AUTH.token && Number(AUTH.expires) > Date.now();
+  const usersP = api('?action=users', {}, NET_TIMEOUT);
+  if(tokenValid){
+    AUTH_ENABLED = true;
+    renderFooterAuth();
+    boot();
+    fetchMeBackground();
+    const ur = await usersP;
+    if(isOldBackendResp(ur)){ AUTH_ENABLED = false; renderFooterAuth(); }
+    else if(ur && Array.isArray(ur.users)) USERS = ur.users;
+    // A network failure here changes nothing — already proceeding on cached data, offline-friendly.
+  } else {
+    const ur = await usersP;
+    if(isOldBackendResp(ur)){
+      AUTH_ENABLED = false;
+      boot();
+    } else if(ur && Array.isArray(ur.users)){
+      AUTH_ENABLED = true;
+      USERS = ur.users;
+      showLoginScreen();
+    } else {
+      // Couldn't tell old backend from new (network failure) and there's no session to fall
+      // back on — show the login screen rather than guess, with a way to try the check again.
+      AUTH_ENABLED = true;
+      showLoginScreen({ networkError: true });
+    }
+  }
+}
+
 /* ================= LOAD =================
    Progress is only ever surfaced (full panel pre-start, mini bar+footer text once started) when
    there is nothing cached to show yet, or the caller explicitly asked for it (user-triggered
    refresh / post-rebuild refetch). A plain background refresh behind already-rendered cached
    data stays silent, exactly as before. */
 async function boot(forceProgress){
+  // A logout while this load is in flight must not let it finish afterwards — it would put the
+  // data back on screen and back into IndexedDB on a device the user just signed out of.
+  const bootToken = AUTH.token;
+  const loggedOutSince = () => AUTH_ENABLED && AUTH.token !== bootToken;
   let cached = null;
   try { cached = await idbGet('summary'); } catch(err) { cached = null; }
+  if(loggedOutSince()) return;
   if(cached && Array.isArray(cached.p) && Array.isArray(cached.s)) start(cached, true);
   const showProgress = forceProgress || !started;
   const prevFootInfo = $("footInfo").textContent;
@@ -851,6 +1125,7 @@ async function boot(forceProgress){
     : null;
   const { data: d, bytes } = await fetchSummaryStreaming('?action=summary', SUMMARY_TIMEOUT, onProgress);
   if(showProgress) $("miniProgress").classList.add('hidden');
+  if(d.auth === 'login_required' || loggedOutSince()) return;   // doLocalLogout() already ran
   if(d.ok && Array.isArray(d.p) && Array.isArray(d.s) && Array.isArray(d.brands)){
     if(bytes) ls.set('summaryByteEst', bytes);   // remember decompressed size for next time's % estimate
     const changed = !cached || d.generated !== cached.generated;
@@ -899,6 +1174,8 @@ async function doRebuild(){
   if(d && d.ok){
     $("footInfo").textContent = `อัปเดตสำเร็จ ${(d.n||0).toLocaleString()} สินค้า (${d.generated}) · กำลังโหลดข้อมูลล่าสุด…`;
     await boot(true);   // refetch summary (with visible progress), overwrite the IDB cache, re-render
+  } else if(d && d.auth === 'login_required'){
+    // doLocalLogout() already ran (see checkAuthFailure()) — the login screen is already up.
   } else if(d && d.busy){
     $("footInfo").textContent = 'มีการอัปเดตข้อมูลอยู่แล้ว — ลองใหม่อีกครั้งในอีกสักครู่';
     setTimeout(() => { if($("footInfo").textContent.startsWith('มีการอัปเดตข้อมูลอยู่แล้ว')) $("footInfo").textContent = prevFootInfo; }, 4000);
@@ -1049,9 +1326,14 @@ async function openDetail(bc){
   // Fired together, not awaited in sequence: serialising these would double the sheet's wait
   // (~1.5s each) for no reason, since the two responses have nothing to do with each other.
   const pricesReq = api(`?action=prices&barcode=${encodeURIComponent(norm)}`, {}, PRICES_TIMEOUT);
-  const tunsongReq = api(`?action=tunsong&barcode=${encodeURIComponent(norm)}`, {}, PRICES_TIMEOUT);
   pricesReq.then(pr => { if(reqId === detailReq) renderPricesSections(pr); });
-  tunsongReq.then(ts => { if(reqId === detailReq) renderTunsongSection(ts); });
+  // ทุนส่ง — never requested (and so never rendered) once auth is enabled and this user can't
+  // see it; see the contract's "Viewer behaviour". `auth:"forbidden"` on an actual response is
+  // handled inside renderTunsongSection() (permission can be revoked mid-session).
+  if(!AUTH_ENABLED || AUTH.can_see_tunsong){
+    const tunsongReq = api(`?action=tunsong&barcode=${encodeURIComponent(norm)}`, {}, PRICES_TIMEOUT);
+    tunsongReq.then(ts => { if(reqId === detailReq) renderTunsongSection(ts); });
+  }
 }
 /**
  * Splits the single ?action=prices response into ราคาปลีก (normal/promo/short_shelf_life) and
@@ -1061,6 +1343,7 @@ async function openDetail(bc){
  * the independent tunsongReq promise in openDetail().
  */
 function renderPricesSections(pr){
+  if(pr && pr.auth === 'login_required') return;   // doLocalLogout() already ran — sheet is already closed
   if(pr && pr.ok && Array.isArray(pr.prices)){
     const retail = pr.prices.filter(o => o.flag !== 'wholesale');
     const wholesale = pr.prices.filter(o => o.flag === 'wholesale');
@@ -1105,6 +1388,14 @@ function renderWholesaleSection(wholesale, retail){
  * data exists" — and never touches #dRows/#dWholesaleRows either way.
  */
 function renderTunsongSection(ts){
+  if(ts && ts.auth === 'login_required') return;   // doLocalLogout() already ran — sheet is already closed
+  if(ts && ts.auth === 'forbidden'){
+    // Permission was revoked mid-session — hide the section quietly (no error banner) and stop
+    // asking for it until the stored session says otherwise again (e.g. after another login).
+    $("dTunsongSec").classList.add('hidden');
+    if(AUTH.can_see_tunsong){ AUTH.can_see_tunsong = false; saveAuth(); }
+    return;
+  }
   if(ts && ts.ok && Array.isArray(ts.t)){
     if(!ts.t.length){ $("dTunsongSec").classList.add('hidden'); return; }
     $("dTunsongRows").innerHTML = ts.t.map(o => `
@@ -1895,6 +2186,16 @@ function initEvents(){
   $("tabCompare").addEventListener('click', ()=>tab('compare'));
   $("refreshBtn").addEventListener('click', refresh);
   $("rebuildBtn").addEventListener('click', doRebuild);
+  $("logoutBtn").addEventListener('click', logout);
+
+  // Auth overlay — a <form> per screen so Enter-in-any-field and the submit button both funnel
+  // through one 'submit' listener (see submitLogin()/submitSetPassword()); the two ลิงก์ buttons
+  // just swap which form is visible.
+  $("authLoginForm").addEventListener('submit', e=>{ e.preventDefault(); submitLogin(); });
+  $("authResetForm").addEventListener('submit', e=>{ e.preventDefault(); submitSetPassword(); });
+  $("authToReset").addEventListener('click', ()=>switchToReset($("authUser").value));
+  $("authToLogin").addEventListener('click', switchToLogin);
+  $("authRetryBtn").addEventListener('click', retryAuthUsers);
 
   $("q").addEventListener('input', e=>{ clearTimeout(debT); debT=setTimeout(()=>renderSearch(e.target.value),120); });
   $("results").addEventListener('click', e=>{ const c=e.target.closest('.pcard'); if(c) openDetail(c.dataset.bc); });
@@ -2015,7 +2316,7 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
 }
 
-boot();
+bootAuth();
 </script>
 </body>
 </html>
