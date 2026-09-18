@@ -104,6 +104,7 @@ function onOpen() {
     .addItem("อัปเดตข้อมูลวิเคราะห์", "runBuildAnalysis")
     .addItem("เติมรหัสร้านที่ยังว่าง", "fillMissingStoreIds")
     .addItem("ตั้งรหัสแอดมิน", "runSetAdminKey")
+    .addItem("ตั้งรหัสแอดมินจากแท็บ Setup", "setAdminKeyFromSetupTab")
     .addItem("ออกจากระบบทุกเครื่อง", "runLogoutEverywhere")
     .addToUi();
 }
@@ -193,6 +194,36 @@ function runSetAdminKey() {
  *  computer on its next check — no separate purge needed here. */
 function storeAdminKey(key) {
   setAdminKeyHash(hashSecret(String(key), randomSaltHex(), HASH_ITERATIONS));
+}
+
+/**
+ * Sets the admin key WITHOUT any prompt: type the key into cell B1 of a tab named "Setup",
+ * then run this from the editor (Run button) or the menu. It hashes the key and CLEARS the
+ * cell, so the key is never left sitting in the Sheet.
+ *
+ * Exists because runSetAdminKey()'s prompts only work from the Sheet menu, and the menu only
+ * appears after onOpen() has run with the current code — which is one moving part too many
+ * when someone is trying to set the key for the first time. Running a function from the editor
+ * uses the SAVED code, so this works before a new version is even deployed.
+ */
+function setAdminKeyFromSetupTab() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName("Setup");
+  if (!sh) {
+    sh = ss.insertSheet("Setup");
+    sh.getRange("A1").setValue("admin key → พิมพ์รหัสในช่อง B1 แล้วรัน setAdminKeyFromSetupTab (ช่องนี้จะถูกล้างอัตโนมัติ)");
+    toastOrLog("สร้างแท็บ Setup แล้ว — พิมพ์รหัสแอดมินในช่อง B1 แล้วรันคำสั่งนี้อีกครั้ง");
+    return;
+  }
+  const cell = sh.getRange("B1");
+  const key = String(cell.getValue() == null ? "" : cell.getValue()).trim();
+  if (key.length < 8) {
+    toastOrLog("ใส่รหัสแอดมินในช่อง B1 ของแท็บ Setup ก่อน (อย่างน้อย 8 ตัวอักษร)");
+    return;
+  }
+  storeAdminKey(key);
+  cell.clearContent();   // never leave the key readable in the Sheet
+  toastOrLog("ตั้งรหัสแอดมินเรียบร้อยแล้ว — ล้างช่อง B1 ให้แล้ว ใช้รหัสนี้เข้าหน้าแอดมินได้เลย");
 }
 
 /** Menu entry point: confirms, then deletes every viewer and admin session. */
