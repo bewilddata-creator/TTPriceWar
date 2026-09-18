@@ -297,6 +297,9 @@ function doGetInner(e) {
     return vocab();
   }
 
+  // ---- diagnostics: timings only, never data — see selfTest() ----
+  if (action === "selftest") return selfTest();
+
   // ---- open: unchanged behaviour, the phone app relies on it ----
   if (action === "lookup") return lookup(p.barcode);
   if (action === "prices") return pricesEndpoint(p.barcode);
@@ -304,6 +307,59 @@ function doGetInner(e) {
   if (action === "psearch") return psearch(p.q, p.brand, p.limit);
 
   return json({ ok: true, msg: "TT Price Wars API v22" });
+}
+
+/**
+ * Times the Sheet operations the admin page depends on, so a "why is everything timing out"
+ * report can be measured instead of guessed. Returns MILLISECONDS AND ROW/COLUMN COUNTS ONLY —
+ * never any cell contents — which is why it can stay open like lookup/prices/stores.
+ *
+ * The interesting number is usually `open`: every request pays to open the whole spreadsheet
+ * before it reads a single cell, and that cost grows with the workbook, not with the range.
+ */
+function selfTest() {
+  const t = [];
+  const mark = function (label, fn) {
+    const t0 = Date.now();
+    let note = "";
+    try { note = fn() || ""; } catch (err) { note = "ERROR " + err; }
+    t.push({ step: label, ms: Date.now() - t0, note: String(note) });
+  };
+
+  let ss, ps, os;
+  mark("openSpreadsheet", function () { ss = SpreadsheetApp.getActiveSpreadsheet(); return ss.getName(); });
+  mark("sheetHandles", function () {
+    ps = ss.getSheetByName("Products"); os = ss.getSheetByName("Observations");
+    return "products+observations";
+  });
+  mark("productsLastRow", function () { return "rows=" + ps.getLastRow(); });
+  mark("observationsLastRow", function () { return "rows=" + os.getLastRow(); });
+  mark("storesRead", function () {
+    const st = ss.getSheetByName("Stores");
+    const last = st.getLastRow();
+    return "cells=" + (last > 1 ? (last - 1) * 4 : 0);
+  });
+  mark("productsAtoM", function () {
+    const last = ps.getLastRow();
+    const v = ps.getRange(2, 1, last - 1, 13).getValues();
+    return "cells=" + (v.length * 13);
+  });
+  mark("productsColP", function () {
+    const last = ps.getLastRow();
+    const v = ps.getRange(2, SACHET_COL, last - 1, 1).getValues();
+    return "cells=" + v.length;
+  });
+  mark("cacheRoundTrip", function () {
+    const c = CacheService.getScriptCache();
+    c.put("selftest", "1", 30);
+    return "hit=" + (c.get("selftest") === "1");
+  });
+  mark("propertiesRead", function () {
+    return "keys=" + PropertiesService.getScriptProperties().getKeys().length;
+  });
+
+  const total = t.reduce(function (sum, x) { return sum + x.ms; }, 0);
+  return json({ ok: true, total_ms: total, steps: t });
 }
 
 /** Every form a barcode may appear in, since the Sheet stores them as numbers. */
