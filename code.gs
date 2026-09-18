@@ -533,15 +533,52 @@ function tunsongFor(ss, forms) {
   return out;
 }
 
-/** The store list. Tiny tab; the picker caches this and refreshes it on open. */
+/* ---- server-side caching for the admin lists ----
+ *
+ * Measured on live data (action=selftest): reading Products A..M costs ~5.3s of a ~7s request,
+ * every single time, and Google fails a noticeable share of long requests outright — so the
+ * admin page reported "เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ" on tabs whose data had not changed since
+ * the last load. These lists are therefore cached, and freshness is kept by VERSION rather than
+ * by a short TTL: every write bumps a counter, the counter is part of the cache key, so an edit
+ * is visible on the very next fetch while untouched data is served without touching the Sheet.
+ *
+ * The counter lives in PropertiesService, not CacheService: a cache entry can vanish at any
+ * time, and a version that resets to 1 would start serving a stale payload cached under the
+ * old key. Reading it costs ~14ms.
+ */
+function dataVersion(kind) {
+  return PropertiesService.getScriptProperties().getProperty("ver:" + kind) || "1";
+}
+
+function bumpDataVersion(kind) {
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty("ver:" + kind, String((Number(props.getProperty("ver:" + kind)) || 1) + 1));
+}
+
+/** Serves `build()`'s payload, from cache when a previous request already built it for this
+ *  same version. A payload over CacheService's ~100KB limit simply fails to cache (silently,
+ *  as everywhere else in this file) and is served fresh each time. */
+function cachedJson(key, seconds, build) {
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get(key);
+  if (hit) return ContentService.createTextOutput(hit).setMimeType(ContentService.MimeType.JSON);
+  const payload = JSON.stringify(build());
+  try { cache.put(key, payload, seconds); } catch (err) {}
+  return ContentService.createTextOutput(payload).setMimeType(ContentService.MimeType.JSON);
+}
+
+/** The store list. Tiny tab, but a request that touches the Sheet at all is a request that can
+ *  hit one of Google's slow spells — cached until a store is created or edited. */
 function stores() {
-  const st = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Stores");
-  if (st.getLastRow() < 2) return json({ ok: true, s: [] });
-  const v = st.getRange(2, 1, st.getLastRow() - 1, 4).getValues();
-  const s = v.filter(function (r) { return r[0] && r[1]; })
-             .map(function (r) { return [String(r[0]), String(r[1]),
-                                         String(r[2] || ""), String(r[3] || "")]; });
-  return json({ ok: true, s: s });
+  return cachedJson("stores:v" + dataVersion("s"), 600, function () {
+    const st = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Stores");
+    if (st.getLastRow() < 2) return { ok: true, s: [] };
+    const v = st.getRange(2, 1, st.getLastRow() - 1, 4).getValues();
+    const s = v.filter(function (r) { return r[0] && r[1]; })
+               .map(function (r) { return [String(r[0]), String(r[1]),
+                                           String(r[2] || ""), String(r[3] || "")]; });
+    return { ok: true, s: s };
+  });
 }
 
 /** Brand list + category tree for the admin dropdowns. Cached an hour; the scan touches
@@ -586,7 +623,13 @@ function needsInfo(limitParam) {
   let limit = Number(limitParam) || 300;
   if (limit < 1) limit = 300;
   if (limit > 1000) limit = 1000;
+  return cachedJson("ni:v" + dataVersion("p") + ":" + limit, 600, function () {
+    return needsInfoPayload(limit);
+  });
+}
 
+/** The actual scan behind needsInfo() — see cachedJson() for why it is wrapped. */
+function needsInfoPayload(limit) {
   const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
   const last = ps.getLastRow();
   const tz = Session.getScriptTimeZone();
@@ -617,7 +660,7 @@ function needsInfo(limitParam) {
       });
     }
   }
-  return json({ ok: true, cdn: CDN_PREFIX, p: out });
+  return { ok: true, cdn: CDN_PREFIX, p: out };
 }
 
 /** Heuristic-only sachet guess for the tagging UI — "sachet" or "". Never written to the
@@ -647,7 +690,13 @@ function sachetQueue(limitParam, c1Param) {
   if (limit < 1) limit = 100;
   if (limit > 300) limit = 300;
   const c1Filter = c1Param ? String(c1Param).trim().toLowerCase() : "";
+  return cachedJson("sq:v" + dataVersion("p") + ":" + limit + ":" + c1Filter, 600, function () {
+    return sachetQueuePayload(limit, c1Filter);
+  });
+}
 
+/** The actual scan behind sachetQueue() — see cachedJson() for why it is wrapped. */
+function sachetQueuePayload(limit, c1Filter) {
   const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
   const last = ps.getLastRow();
   const out = [];
@@ -678,7 +727,7 @@ function sachetQueue(limitParam, c1Param) {
       });
     }
   }
-  return json({ ok: true, cdn: CDN_PREFIX, remaining: remaining, p: out });
+  return { ok: true, cdn: CDN_PREFIX, remaining: remaining, p: out };
 }
 
 /** Free-text product search. Stops at `limit` rather than filtering the whole tab. */
@@ -1703,6 +1752,7 @@ function writeOne(ss, d, ctx) {
         .appendRow([d.new_store.store_id, d.new_store.store, "", "", "created from app"]);
       sm.keys.push(storeKey(d.new_store.store));
       sm.ids.push(d.new_store.store_id);
+      bumpDataVersion("s");
     } else {
       canonicalStore = sm.ids[at] || "";
       if (canonicalStore && canonicalStore !== d.new_store.store_id) d.store_id = canonicalStore;
@@ -1724,6 +1774,7 @@ function writeOne(ss, d, ctx) {
         np.item || "", np.sku || "", "", "", "", "", "", img,
         "field_scan", "YES", ts, "", ctxNextSeq(ctx)]);
       codes[key] = true;
+      bumpDataVersion("p");   // it belongs in the review queue right away
     }
   }
 
@@ -1802,6 +1853,7 @@ function updateProduct(ss, d) {
   // Both caches must go: "lk:" or lookup keeps serving the pre-edit product for 6 hours, and
   // "vocab" or a brand/category the admin just introduced is missing from their own dropdown.
   CacheService.getScriptCache().removeAll(["lk:" + normBarcode(d.barcode), "vocab"]);
+  bumpDataVersion("p");   // the review queue / sachet queue must show this edit immediately
   return { id: d.barcode, status: "updated" };
 }
 
@@ -1887,6 +1939,7 @@ function bulkSachet(ss, d) {
     }
   }
 
+  if (updated > 0) bumpDataVersion("p");
   return { id: "bulkSachet", status: "ok", updated: updated, skipped: skipped, notFound: notFound };
 }
 
@@ -1919,6 +1972,7 @@ function updateStore(ss, d) {
     const cur = range.getValues()[0];
     BE_KEYS.forEach(function (k, i) { if (k in fields) cur[i] = fields[k]; });
     range.setValues([cur]);
+    bumpDataVersion("s");
   }
   return { id: d.store_id, status: "updated" };
 }
@@ -1954,6 +2008,7 @@ function createStore(ss, d, ctx) {
     d.notes || "created from admin"]);
   sm.keys.push(key);
   sm.ids.push(id);
+  bumpDataVersion("s");
   return { id: id, status: "created" };
 }
 
@@ -1966,6 +2021,7 @@ function uploadImage(ss, d) {
   const url = savePhoto(d.photo, "prod_" + normBarcode(d.barcode));
   ps.getRange(row, 10).setValue(url);
   CacheService.getScriptCache().remove("lk:" + normBarcode(d.barcode));
+  bumpDataVersion("p");
   return { id: d.barcode, status: "updated", url: url };
 }
 
