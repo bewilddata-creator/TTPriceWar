@@ -840,10 +840,28 @@ async function checkAdminAuth(){
  * POSTs are never retried here: the outbox owns that, and it tracks obs_id so the backend can
  * recognise a repeat. Retrying a write from two places would be two mechanisms guessing.
  */
+/**
+ * Apps Script fails in BURSTS: for a minute or two Google answers with an error page (or hangs
+ * for ~30s and then does) before recovering, and the failures come several in a row — a single
+ * retry rides out a blip but not a burst, which is why one save in a handful used to report
+ * "ไม่มีสัญญาณ" while the connection was fine. GETs therefore get three tries with a growing
+ * pause between them.
+ *
+ * POSTs are only retried when the caller passes `retryable: true`, and ONLY for writes that a
+ * repeat cannot duplicate: obs batches (deduped server-side on obs_id), updateProduct,
+ * updateStore and bulkSachet (all idempotent — writing the same values again changes nothing)
+ * and createStore (deduped on the store name). tunsong and uploadImage are deliberately NOT
+ * retryable: a repeat appends a second ทุนส่ง row / a second Drive file, and a failed request
+ * may well have reached the Sheet before the reply was lost.
+ */
+const RETRY_PAUSE_MS = [0, 1200, 3500];
+
 async function api(path, opts = {}, timeout = NET_TIMEOUT) {
   [path, opts] = withAdminAuth(path, opts);
   const isGet = !opts.method || String(opts.method).toUpperCase() === 'GET';
-  for (let attempt = 0; attempt < (isGet ? 2 : 1); attempt++) {
+  const tries = (isGet || opts.retryable) ? 3 : 1;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, RETRY_PAUSE_MS[attempt]));
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeout);
     try {
@@ -852,7 +870,7 @@ async function api(path, opts = {}, timeout = NET_TIMEOUT) {
       checkAdminRequired(d);
       return d;
     } catch (e) {
-      if (attempt === 0 && isGet) continue;   // one more go before calling it a failure
+      if (attempt < tries - 1) continue;
       return { ok: false, offline: true };
     } finally {
       clearTimeout(timer);
@@ -880,7 +898,7 @@ function setSubmitStatus(msg, isErr){
  *  predates an endpoint this page calls. The two need different next steps from the admin, so
  *  they must not collapse into the same generic error text. */
 function backendMsg(d, fallback){
-  if (d && d.offline) return 'ไม่มีสัญญาณ — ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่';
+  if (d && d.offline) return 'เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ (Google ขัดข้องชั่วคราว) — ลองใหม่อีกครั้ง';
   if (isAdminRequired(d)) return `${fallback} — ต้องเข้าสู่ระบบแอดมินอีกครั้ง`;
   if (d && d.ok && typeof d.msg === 'string') return `${fallback} — เซิร์ฟเวอร์รุ่นนี้ยังไม่รองรับคำสั่งนี้`;
   if (d && d.error) return `${fallback} (${d.error})`;
@@ -1673,7 +1691,7 @@ async function submitBatch(){
   setSubmitStatus(`กำลังบันทึก ${items.length} รายการ…`);
 
   const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({ type: 'batch', items }) }, 30000);
+    body: JSON.stringify({ type: 'batch', items }), retryable: true }, 30000);
 
   submitting = false;
 
@@ -2100,7 +2118,7 @@ async function saveReview(){
   const btn = $('rvSaveBtn');
   if (btn) btn.disabled = true;
   const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({ type: 'updateProduct', barcode: p.barcode, fields, clear_needs_info: true }) }, 20000);
+    body: JSON.stringify({ type: 'updateProduct', barcode: p.barcode, fields, clear_needs_info: true }), retryable: true }, 20000);
   if (isAdminRequired(d)) {
     toast('บันทึกไม่สำเร็จ — ต้องเข้าสู่ระบบแอดมินอีกครั้ง', true);
     if (btn) btn.disabled = false;
@@ -2245,7 +2263,7 @@ async function saveStoreModal(){
     if (!Object.keys(fields).length) { closeStoreModal(); return; }
 
     const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({ type: 'updateStore', store_id: orig.id, fields }) }, 20000);
+      body: JSON.stringify({ type: 'updateStore', store_id: orig.id, fields }), retryable: true }, 20000);
     if (isAdminRequired(d)) {
       // Nothing on screen changes — the table still shows pre-edit values and the modal stays
       // open with what the admin typed, same as any other failed save here.
@@ -2277,7 +2295,7 @@ async function saveStoreModal(){
   // Create mode.
   if (!storeName) { toast('กรุณาระบุชื่อร้าน', true); btn.disabled = false; return; }
   const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({ type: 'createStore', store_id: '', store: storeName, region, channel, notes }) }, 20000);
+    body: JSON.stringify({ type: 'createStore', store_id: '', store: storeName, region, channel, notes }), retryable: true }, 20000);
   if (isAdminRequired(d)) { toast('บันทึกไม่สำเร็จ — ต้องเข้าสู่ระบบแอดมินอีกครั้ง', true); btn.disabled = false; return; }
   const r = d.ok && Array.isArray(d.results) ? d.results[0] : null;
   if (!r) { toast('บันทึกไม่สำเร็จ', true); btn.disabled = false; return; }
@@ -2711,7 +2729,7 @@ async function flushPkPending(){
   const entries = [...PK.pending.entries()];
   const items = entries.map(([barcode, value]) => ({ type: 'updateProduct', barcode, fields: { is_sachet: value } }));
   const d = await api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({ type: 'batch', items }) }, 20000);
+    body: JSON.stringify({ type: 'batch', items }), retryable: true }, 20000);
   pkFlushing = false;
   if (d.ok && Array.isArray(d.results)) {
     // "admin_required" must NOT count as confirmed — checkAdminRequired() (inside api()) already
@@ -2960,7 +2978,7 @@ function renderPkBulk(){
  *  row keyed "bulkSachet". */
 function postBulkSachet(value, barcodes){
   return api('', { method: 'POST', headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({ type: 'bulkSachet', value, barcodes, onlyBlank: true }) }, 30000);
+    body: JSON.stringify({ type: 'bulkSachet', value, barcodes, onlyBlank: true }), retryable: true }, 30000);
 }
 
 /** A bulk write is the one action on this tab that is expensive to get wrong — one click can

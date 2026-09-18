@@ -528,7 +528,12 @@ function checkAuthFailure(d) {
 async function api(path, opts = {}, timeout = NET_TIMEOUT) {
   const isGet = !opts.method || String(opts.method).toUpperCase() === 'GET';
   const fullPath = isGet ? withToken(path) : path;
-  for (let attempt = 0; attempt < (isGet ? 2 : 1); attempt++) {
+  // Google answers with an error page in BURSTS lasting a minute or two, several failures in a
+  // row — one retry rides out a blip but not a burst. POSTs from this page are logins and a
+  // logout; those stay single-attempt so a slow success is never turned into a second session.
+  const tries = isGet ? 3 : 1;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, attempt === 1 ? 1200 : 3500));
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeout);
     try {
@@ -537,7 +542,7 @@ async function api(path, opts = {}, timeout = NET_TIMEOUT) {
       checkAuthFailure(data);
       return data;
     } catch (e) {
-      if (attempt === 0 && isGet) continue;   // one more go before calling it a failure
+      if (attempt < tries - 1) continue;
       return { ok: false, offline: true };
     } finally {
       clearTimeout(timer);
