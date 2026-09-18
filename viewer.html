@@ -277,7 +277,7 @@ footer button:disabled{opacity:.5; cursor:default}
   </div></div>
 
   <section id="vSearch" class="hidden">
-    <div class="searchbar"><input type="text" id="q" placeholder="ค้นหาสินค้า… พิมพ์ผิดได้ สลับคำได้" autocomplete="off"></div>
+    <div class="searchbar"><input type="text" id="q" placeholder="ค้นหาสินค้าหรือบาร์โค้ด… พิมพ์ผิดได้ สลับคำได้" autocomplete="off"></div>
     <div class="meta-line" id="qMeta"></div>
     <div class="grid" id="results"></div>
   </section>
@@ -353,7 +353,7 @@ footer button:disabled{opacity:.5; cursor:default}
       <div class="cmp-col">
         <div id="cmpSearchL">
           <div class="searchbar" style="margin-bottom:0">
-            <input type="text" id="cmpQL" placeholder="ค้นหาสินค้าฝั่งซ้าย…" autocomplete="off">
+            <input type="text" id="cmpQL" placeholder="ค้นหาสินค้าหรือบาร์โค้ดฝั่งซ้าย…" autocomplete="off">
             <!-- เลือกจากรายการ — browse picker sharing cmpPool() with the search box above; see
                  renderCmpPickPanel()/cmpPickSorted() in the script. Reuses the c2/c3 dropdowns'
                  open/close machinery (openMSelect/toggleMSelect/closeMSelect), hence the *Btn/
@@ -370,7 +370,7 @@ footer button:disabled{opacity:.5; cursor:default}
       <div class="cmp-col">
         <div id="cmpSearchR">
           <div class="searchbar" style="margin-bottom:0">
-            <input type="text" id="cmpQR" placeholder="ค้นหาสินค้าฝั่งขวา…" autocomplete="off">
+            <input type="text" id="cmpQR" placeholder="ค้นหาสินค้าหรือบาร์โค้ดฝั่งขวา…" autocomplete="off">
             <div class="mselect" id="cmpPickRDd">
               <button type="button" class="mselect-btn" id="cmpPickRBtn" aria-haspopup="true" aria-expanded="false">เลือกจากรายการ</button>
               <div class="mselect-panel cmp-pick-panel hidden" id="cmpPickRPanel"></div>
@@ -479,7 +479,7 @@ footer button:disabled{opacity:.5; cursor:default}
 </div>
 
 <script type="module">
-import { normBarcode, backupImageUrl } from "./core.js";
+import { normBarcode, backupImageUrl, barcodeQuery } from "./core.js";
 
 /* ================= CONFIG ================= */
 const API_URL = "https://script.google.com/macros/s/AKfycbz0PQVtM46QOMu7aWOKV56Q-A3R6Fp45V42sBslG1AhZfQ_S3RyQGOg1Zp5toMgQtyaGg/exec";   // ← Web app URL เดียวกับหน้าเก็บราคา (…/exec)
@@ -1211,6 +1211,20 @@ function tokenScore(t, words){ let best=0;
 // of a second one drifting out of sync with this one.
 function doSearch(q, pool){
   if(!pool) pool = P;
+  // A barcode typed (or scanned) into the box searches barcodes, not words — an exact match
+  // first, then products whose barcode merely contains it, so a partial code still finds
+  // something. Falls through to the word search when nothing matches, since a digits-only query
+  // can still legitimately be a name ("29" in a shade name, say).
+  const bq = barcodeQuery(q);
+  if(bq){
+    const exact = [], partial = [];
+    for(const p of pool){
+      const k = normBarcode(p.bc);
+      if(k === bq) exact.push(p);
+      else if(k.includes(bq)) partial.push(p);
+    }
+    if(exact.length || partial.length) return exact.concat(partial);
+  }
   const toks = q.toLowerCase().normalize('NFC').split(/\s+/).filter(Boolean);
   if(!toks.length) return [];
   const out=[];

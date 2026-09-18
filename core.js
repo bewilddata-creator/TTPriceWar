@@ -50,6 +50,20 @@ export function backupImageUrl(barcode) {
   return norm === "0" ? "" : IMG_BACKUP_BASE + norm + ".jpg";
 }
 
+/**
+ * A search box entry that is meant as a BARCODE, normalised for comparison — "" when the text
+ * should be treated as a name search instead. Digits, spaces and hyphens only (a scanner or a
+ * shelf photo may be typed with either), and at least 6 of them: shorter digit strings are far
+ * more often a size or a shade number ("50", "029") than a barcode, and matching those against
+ * barcodes would bury the name results the user actually wanted.
+ */
+export function barcodeQuery(q) {
+  const raw = String(q == null ? "" : q).trim();
+  if (!raw || !/^[\d\s-]+$/.test(raw)) return "";
+  const digits = raw.replace(/\D/g, "");
+  return digits.length >= 6 ? normBarcode(digits) : "";
+}
+
 export const SCAN_WINDOW_MS = 2500;
 
 /** A barcode lingering in the viewfinder must not create a second row. */

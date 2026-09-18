@@ -6,7 +6,7 @@
 // activate() drop the old cache. It is NOT required for ordinary deploys: cacheFirst() refreshes
 // each entry in the background, so a phone serves the previous shell once and picks up the new
 // one on the load after. Bumping simply makes that switch immediate instead of one load late.
-const CACHE = 'pricescout-v6';
+const CACHE = 'pricescout-v7';
 
 // The app shell: everything needed to open the app and use the scanner with zero network.
 const PRECACHE = [
