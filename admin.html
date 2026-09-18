@@ -1794,8 +1794,11 @@ async function fetchReviewQueue(){
   if (RV.state === 'loading') return;   // the button is disabled while loading, but guard anyway
   RV.state = 'loading';
   renderReviewScreen();
+  // Both of these scan every product row server-side, so they get longer than the default
+  // timeout — 30s was marginal at 30k products and any slow moment on Google's side turned
+  // into "เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ" rather than a slow load.
   const [ni, vo] = await Promise.all([
-    api(`?action=needsinfo&limit=${REVIEW_NEEDSINFO_LIMIT}`), api('?action=vocab')
+    api(`?action=needsinfo&limit=${REVIEW_NEEDSINFO_LIMIT}`, {}, 60000), api('?action=vocab', {}, 60000)
   ]);
   if (!ni.ok || !Array.isArray(ni.p)) {
     RV.state = 'error';

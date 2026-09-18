@@ -536,31 +536,30 @@ function needsInfo(limitParam) {
   const tz = Session.getScriptTimeZone();
   const out = [];
   if (last > 1) {
-    // Two narrow reads to decide WHICH rows qualify, then full rows for only those. Reading
-    // all 14 columns of 21k+ products to find a handful was the slow part; brand (B) and
-    // needs_info (L) are all the filter needs.
+    // TWO bulk reads and nothing else, same as sachetQueue(). This used to narrow the rows with
+    // two column reads and then fetch each qualifying row with its OWN getRange — up to `limit`
+    // (300) round trips, tens of seconds, and past 20k products it timed out the admin page on
+    // nearly every load. A..M carries everything a review card shows (barcode through
+    // first_seen, including the needs_info flag in L); P decides isSachet.
     const n = last - 1;
-    const brands = ps.getRange(2, 2, n, 1).getValues();
-    const flags  = ps.getRange(2, 12, n, 1).getValues();
-    const rows = [];
-    for (let i = 0; i < n && rows.length < limit; i++) {
-      const needs = flags[i][0] === "YES";
-      if (needs || !String(brands[i][0] || "").trim()) rows.push({ row: i + 2, needs: needs });
-    }
-    rows.forEach(function (hit) {
-      const r = ps.getRange(hit.row, 1, 1, 16).getValues()[0];   // A..P — widened for isSachet
-      if (!r[0]) return;
+    const head = ps.getRange(2, 1, n, 13).getValues();           // A..M
+    const sach = ps.getRange(2, SACHET_COL, n, 1).getValues();   // P
+    for (let i = 0; i < n && out.length < limit; i++) {
+      const r = head[i];
+      if (!r[0]) continue;
+      const needs = r[11] === "YES";
+      if (!needs && String(r[1] || "").trim()) continue;         // has a brand and isn't flagged
       out.push({
         barcode: String(r[0]), brand: r[1] || "", item: r[2] || "", sku: r[3] || "",
         size: r[4] || "", unit: r[5] || "", c1: r[6] || "", c2: r[7] || "", c3: r[8] || "",
         img: String(r[9] || "").replace(CDN_PREFIX, "~"),
         first_seen: (r[12] instanceof Date) ? Utilities.formatDate(r[12], tz, "yyyy-MM-dd") : String(r[12] || ""),
-        needs_info: hit.needs,
+        needs_info: needs,
         // raw "YES"/"NO"/"" so the เติมข้อมูลสินค้า form can show and edit it — blank is a
         // real state (not yet reviewed), never coerced to a boolean like needs_info is.
-        is_sachet: String(r[15] || "")
+        is_sachet: String(sach[i][0] || "")
       });
-    });
+    }
   }
   return json({ ok: true, cdn: CDN_PREFIX, p: out });
 }
