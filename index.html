@@ -921,7 +921,7 @@ const CAT_RECHECK_MS = 3600e3;        // how often a returning user pays for a c
 const CAT_HITS = 200;                 // enough candidates for rankProducts to choose 30 from
 
 /**
- * Wi-Fi only, because this is ~2MB and the people using it are in shops on mobile data.
+ * Wi-Fi only: the payload is ~2MB of JSON, though it compresses to ~0.5MB on the wire.
  * true = Wi-Fi (or wired), false = mobile data or the phone asking us to save data,
  * null = the phone won't say — which is EVERY iPhone: Safari implements no part of the
  * Network Information API. Guessing from effectiveType would be wrong (fast 5G reads as the
@@ -946,8 +946,8 @@ function renderCatLine(state){
   el.disabled = state === 'busy';
   el.textContent = state === 'busy'
     ? 'กำลังดาวน์โหลดรายการสินค้า…'
-    : (CAT ? 'มีรายการสินค้าใหม่ — แตะเพื่ออัปเดต (ประมาณ 2 MB, ควรต่อ Wi-Fi)'
-           : 'ดาวน์โหลดรายการสินค้าเพื่อค้นหาเร็วขึ้นและใช้ได้ตอนไม่มีสัญญาณ (ประมาณ 2 MB, ควรต่อ Wi-Fi)');
+    : (CAT ? 'มีรายการสินค้าใหม่ — แตะเพื่ออัปเดต (ประมาณ 0.5 MB)'
+           : 'แตะเพื่อดาวน์โหลดรายการสินค้า — ค้นหาเร็วขึ้นมากและใช้ได้ตอนไม่มีสัญญาณ (ประมาณ 0.5 MB)');
 }
 
 // Same guarded pattern as viewer.html: an unresolved indexedDB promise once hung that page
