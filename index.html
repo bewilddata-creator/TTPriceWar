@@ -1044,9 +1044,16 @@ async function catalogCheck(force){
       if (!vd.v) { catNoApi = true; return; }           // old backend: no such endpoint
       if (String(vd.v) === CATV) { ls.set('ps_catchk', Date.now()); catPending = false; return; }
     }
-    // Only the ~2MB download itself waits for Wi-Fi. On mobile data (or an iPhone, which never
-    // tells us), nothing is fetched until the user taps the line above.
-    if (!force && wifiState() !== true) { catPending = true; return; }
+    // Only the download itself waits for Wi-Fi. On mobile data — or an iPhone, which never
+    // tells us — the FIRST one waits for a tap. After that tap the user has consented, and
+    // every phone here is an iPhone, so later updates refresh themselves at most once a day
+    // rather than nagging after every product edit (the version bumps on each one).
+    if (!force && wifiState() !== true) {
+      const consented = ls.get('ps_catok', 0);
+      const lastAuto = ls.get('ps_catauto', 0);
+      if (!consented || Date.now() - lastAuto < 864e5) { catPending = true; return; }
+      ls.set('ps_catauto', Date.now());
+    }
     const d = await api('?action=catalog');
     if (!d.ok) { catFails++; return; }
     if (!Array.isArray(d.p) || !Array.isArray(d.brands) || !d.v) { catNoApi = true; return; }
@@ -1055,6 +1062,7 @@ async function catalogCheck(force){
     catalogSwap(String(d.v), items);
     ls.set('ps_catchk', Date.now());
     catPending = false;
+    if (force) ls.set('ps_catok', Date.now());   // tapped once = consent for later refreshes
     if (!await catIdb('readwrite', { v: CATV, p: CAT })) ls.set('ps_catnostore', Date.now());
   } catch(e) { catFails++; }
   finally {
