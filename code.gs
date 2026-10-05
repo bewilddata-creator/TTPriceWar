@@ -300,6 +300,10 @@ function doGetInner(e) {
   // ---- diagnostics: timings only, never data — see selfTest() ----
   if (action === "selftest") return selfTest();
 
+  // ---- the phone's local catalog (open, like psearch — the phone never logs in) ----
+  if (action === "catalogver") return json({ ok: true, v: dataVersion("p") });
+  if (action === "catalog") return catalogEndpoint();
+
   // ---- open: unchanged behaviour, the phone app relies on it ----
   if (action === "lookup") return lookup(p.barcode);
   if (action === "prices") return pricesEndpoint(p.barcode);
@@ -424,7 +428,9 @@ function pricesEndpoint(barcode) {
   if (hit) return ContentService.createTextOutput(hit).setMimeType(ContentService.MimeType.JSON);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const payload = JSON.stringify({ ok: true, prices: pricesFor(ss, barcodeForms(barcode)) });
-  cache.put(ck, payload, 600);       // short: a price captured now should show up soon
+  // 6h, not minutes: this scan costs ~11s on 65k observations, and the ONE thing that makes it
+  // stale — a new price for this same barcode — clears the key explicitly (see writeOne).
+  cache.put(ck, payload, 21600);
   return ContentService.createTextOutput(payload).setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -761,6 +767,42 @@ function psearch(q, brandFilter, limitParam) {
     }
   }
   return json({ ok: true, p: out });
+}
+
+/**
+ * The whole product catalogue, stripped to what a search result shows: barcode, brand, item,
+ * sku, size, unit. The phone downloads this ONCE and searches it locally, which is the only
+ * way to beat Apps Script's ~1.7s floor per request — a name search that has to ask the server
+ * cannot feel instant no matter how fast the server gets.
+ *
+ * Brands are interned (the same handful of names repeat across thousands of rows), which is
+ * most of the difference between a ~2MB and a ~1.3MB payload before compression.
+ *
+ * `v` is the product data version: the phone sends it back to action=catalogver to ask "is my
+ * copy still current?" — a properties read with no Sheet access, so checking is ~free even
+ * though rebuilding this is not.
+ */
+function catalogEndpoint() {
+  const v = dataVersion("p");
+  // Caching this is best-effort only: at ~1.3MB it is far over CacheService's ~100KB per-key
+  // limit, so in practice every download rebuilds. That is fine — a phone downloads it once
+  // per catalogue change, not once per search, which is the entire point.
+  return cachedJson("cat:v" + v, 21600, function () {
+    const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Products");
+    const last = ps.getLastRow();
+    const B = makeDict();
+    const p = [];
+    if (last > 1) {
+      const rows = ps.getRange(2, 1, last - 1, 6).getValues();   // A..F
+      rows.forEach(function (r) {
+        const bc = String(r[0] || "");
+        if (!bc) return;
+        p.push([bc, B.idx(r[1]), String(r[2] || ""), String(r[3] || ""),
+                (r[4] === "" || r[4] == null) ? "" : r[4], String(r[5] || "")]);
+      });
+    }
+    return { ok: true, v: v, brands: B.arr, p: p };
+  });
 }
 
 /**
@@ -1793,6 +1835,8 @@ function writeOne(ss, d, ctx) {
       d.source || "scan", d.by || "", minQty]);
     ctxRecentIds(ctx).push(id);
     ctx.cache.put("obs:" + id, "1", OBS_CACHE_SEC);
+    // The cached prices for this product are now wrong — and they are cached for 6h.
+    ctx.cache.remove("pr:" + normBarcode(d.barcode));
     return { id: id, status: "written", store_id: canonicalStore || undefined };
   }
 

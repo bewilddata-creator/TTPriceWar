@@ -898,6 +898,152 @@ async function qStopCam(){
   $('qCamBtn').classList.remove('on');
 }
 
+/* ---- local catalog ----
+   A name search that asks the server cannot feel instant: Apps Script charges ~1.7s per
+   request before it reads a single row, and psearch then re-scans every product. So the whole
+   catalogue (action=catalog, ~1.3MB) is kept on the phone and searched in memory; the server
+   path stays as the fallback for everything this cannot answer.
+   Nothing here may ever delay or break the page: every failure — no IndexedDB, a blocked open,
+   quota, an old backend with no catalog endpoint, a failed download — leaves CAT null, and a
+   null CAT means runNameSearch behaves exactly as it did before this existed.
+   CAT holds the product objects renderNameResults already expects; CATHAY is a parallel array
+   of their lowercased "brand item sku", built once so a keystroke lowercases nothing. */
+let CAT = null, CATHAY = null, CATV = '';
+let catDb = null, catBusy = false, catFails = 0, catNoApi = false;
+const CAT_RECHECK_MS = 3600e3;        // how often a returning user pays for a catalogver call
+const CAT_HITS = 200;                 // enough candidates for rankProducts to choose 30 from
+
+// Same guarded pattern as viewer.html: an unresolved indexedDB promise once hung that page
+// forever, so every await carries a timeout and every failure resolves to a fallback.
+// A DB of its own, not the viewer's 'pricescout': this page shares that origin, and two pages
+// holding connections to one database is how upgrade/blocked events start deadlocking.
+const IDB_TIMEOUT = 1500;
+function withTimeout(promise, ms, fallback){
+  return new Promise(resolve => {
+    let settled = false;
+    const t = setTimeout(() => { if(!settled){ settled = true; resolve(fallback) } }, ms);
+    promise.then(
+      v => { if(!settled){ settled = true; clearTimeout(t); resolve(v) } },
+      () => { if(!settled){ settled = true; clearTimeout(t); resolve(fallback) } }
+    );
+  });
+}
+function catDbOpen(){
+  return withTimeout(new Promise(resolve => {
+    try {
+      const req = indexedDB.open('ps_catalog', 1);
+      req.onupgradeneeded = e => { try { e.target.result.createObjectStore('kv') } catch(err){} };
+      req.onsuccess = e => {
+        const db = e.target.result;
+        db.onversionchange = () => { try { db.close() } catch(err){} catDb = null; };
+        resolve(db);
+      };
+      req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
+    } catch(err) { resolve(null); }
+  }), IDB_TIMEOUT, null);
+}
+function catIdb(mode, val){
+  return withTimeout(new Promise(resolve => {
+    try {
+      const tx = catDb.transaction('kv', mode);
+      const st = tx.objectStore('kv');
+      if (mode === 'readonly') {
+        const req = st.get('cat');
+        req.onsuccess = () => resolve(req.result ?? null);
+        req.onerror = () => resolve(null);
+      } else {
+        st.put(val, 'cat');
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+        tx.onabort = () => resolve(false);
+      }
+    } catch(err) { resolve(mode === 'readonly' ? null : false); }
+  }), IDB_TIMEOUT * 4, mode === 'readonly' ? null : false);   // a 30k-row put is not a 1-key put
+}
+
+function catalogSwap(v, items){
+  CATHAY = items.map(p => `${p.brand} ${p.item} ${p.sku}`.toLowerCase().normalize('NFC'));
+  CAT = items; CATV = v;
+}
+
+/** catalog payload -> the objects renderNameResults reads. Rows that are not arrays are
+    dropped rather than trusted; the server never emits them, but this is stored data too. */
+function catalogDecode(d){
+  const out = [];
+  for (const r of d.p) {
+    if (!Array.isArray(r) || !r[0]) continue;
+    out.push({ barcode: String(r[0]), brand: d.brands[r[1]] || '', item: r[2] || '',
+               sku: r[3] || '', size: r[4] ?? '', unit: r[5] || '' });
+  }
+  return out;
+}
+
+async function catalogBoot(){
+  // A previous quota failure means every launch would re-download 1.3MB and lose it again.
+  if (Date.now() - ls.get('ps_catnostore', 0) < 7 * 864e5) return;
+  catDb = await catDbOpen();
+  if (!catDb) return;                                  // no usable IndexedDB: server search, as before
+  const rec = await catIdb('readonly');
+  if (rec && rec.v && Array.isArray(rec.p) && rec.p.length && typeof rec.p[0].barcode === 'string')
+    catalogSwap(String(rec.v), rec.p);
+  catalogCheck();
+}
+
+/** Brings the local copy up to date. With no copy, goes straight to the download (a version
+    call first would only add ~1.7s). A failure is counted, not retried here: the next
+    visibility change gets one more go, and catFails >= 2 stops it for the session. */
+async function catalogCheck(){
+  if (!catDb || catBusy || catNoApi || catFails >= 2) return;
+  if (CAT && Date.now() - ls.get('ps_catchk', 0) < CAT_RECHECK_MS) return;
+  catBusy = true;
+  try {
+    if (CAT) {
+      const vd = await api('?action=catalogver');
+      if (!vd.ok) { catFails++; return; }
+      if (!vd.v) { catNoApi = true; return; }           // old backend: no such endpoint
+      if (String(vd.v) === CATV) { ls.set('ps_catchk', Date.now()); return; }
+    }
+    const d = await api('?action=catalog');
+    if (!d.ok) { catFails++; return; }
+    if (!Array.isArray(d.p) || !Array.isArray(d.brands) || !d.v) { catNoApi = true; return; }
+    const items = catalogDecode(d);
+    if (!items.length) { catNoApi = true; return; }
+    catalogSwap(String(d.v), items);
+    ls.set('ps_catchk', Date.now());
+    if (!await catIdb('readwrite', { v: CATV, p: CAT })) ls.set('ps_catnostore', Date.now());
+  } catch(e) { catFails++; }
+  finally { catBusy = false; }
+}
+
+/** AND of whitespace-separated tokens over brand+item+sku — psearch()'s rule — in catalog
+    order, capped; rankProducts then does the ordering. */
+function catalogSearch(q){
+  const toks = q.toLowerCase().normalize('NFC').split(/\s+/).filter(Boolean);
+  const out = [];
+  if (!toks.length) return out;
+  for (let i = 0; i < CATHAY.length && out.length < CAT_HITS; i++) {
+    const h = CATHAY[i];
+    let ok = true;
+    for (let t = 0; t < toks.length; t++) if (h.indexOf(toks[t]) < 0) { ok = false; break; }
+    if (ok) out.push(CAT[i]);
+  }
+  return out;
+}
+
+/** Answers from the local catalog if it can: true = rendered. Zero hits returns false so the
+    caller asks the server — the catalogue can predate a product added minutes ago. */
+function localNameSearch(q){
+  if (!CAT) return false;
+  const hits = catalogSearch(q);
+  if (!hits.length) return false;
+  qNameSeq++;                          // drop any server reply still in flight for an older query
+  clearTimeout(qNameTimer);
+  $('qNameCard').classList.remove('hidden');
+  renderNameResults(hits, q);
+  return true;
+}
+
 /* ---- name search ----
    The barcode field doubles as a name search box: standing in a shop without the item in
    hand, or with an unreadable barcode, typing "mille lip" should still find something.
@@ -971,6 +1117,7 @@ function renderNameResults(list, q){
 }
 
 async function runNameSearch(q){
+  if (localNameSearch(q)) return;
   const seq = ++qNameSeq;
   showNameSearching();
   const d = await api(`?action=psearch&q=${encodeURIComponent(q)}&limit=30`);
@@ -981,6 +1128,7 @@ async function runNameSearch(q){
 
 function scheduleNameSearch(q){
   clearTimeout(qNameTimer);
+  if (localNameSearch(q)) return;      // synchronous: no debounce needed, only the server leg waits
   qNameTimer = setTimeout(() => runNameSearch(q), 300);   // wait for typing to stop
 }
 
@@ -1009,6 +1157,15 @@ async function qLookup(code){
   $('qBrand').textContent = ''; $('qItem').textContent = 'กำลังค้นหา…';
   $('qSku').textContent = ''; $('qSize').textContent = '';
   $('qImg').style.visibility = 'hidden';
+  // The catalog already knows this barcode: show the name now instead of a blank card while
+  // the network calls run. The server reply below still overwrites it, so it stays the truth.
+  const known = CAT && CAT.find(p => p.barcode === code);
+  if (known) {
+    $('qBrand').textContent = known.brand;
+    $('qItem').textContent = known.item || known.barcode;
+    $('qSku').textContent = known.sku;
+    $('qSize').textContent = [known.size, known.unit].filter(Boolean).join(' ');
+  }
   ['qStats','qPricesCard','qEmpty'].forEach(id => $(id).classList.add('hidden'));
 
   const [res, list] = await Promise.all([lookupBarcode(code), pricesFor(code)]);
@@ -1263,8 +1420,11 @@ function init(){
   if (S.storeId && ls.get('ps_cam', false)) startCam();
   refreshStores();
   flushOutbox(true);
+  // After first paint, so none of it competes with the page becoming usable.
+  requestAnimationFrame(() => setTimeout(catalogBoot, 0));
 }
 init();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) catalogCheck(); });
 
 // Registered on load, not at parse time, so it never competes with the app becoming
 // interactive; failure is silent because a shop with no signal is exactly the case where
