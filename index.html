@@ -162,6 +162,12 @@ main{flex:1; padding:12px; display:flex; flex-direction:column; gap:10px; paddin
 .qty-wrap .tin{padding:11px; font-size:15px}
 .qty-wrap .tin:focus{border-color:var(--ok)}
 .qty-wrap .hint{font-size:11.5px; color:var(--mut); margin-top:4px}
+/* The offline-catalog line: only ever visible when there is something to download, and never
+   anything the user must deal with — the search box above it works regardless. */
+.catline{display:block; width:100%; margin-top:10px; padding:9px 10px; text-align:left;
+  background:var(--bg); border:1px dashed var(--line); border-radius:10px;
+  font-size:12.5px; color:var(--mut); font-family:inherit}
+.catline:disabled{opacity:.7}
 
 .pad{display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin-top:7px}
 .pad button{padding:15px 0; font-size:23px; font-weight:600; background:var(--paper);
@@ -369,6 +375,7 @@ footer{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100
       <div class="readerwrap hidden" id="qReaderWrap">
         <div id="qReader"></div>
       </div>
+      <button type="button" class="catline hidden" id="catLine"></button>
     </div>
 
     <div class="card hidden" id="qNameCard">
@@ -909,9 +916,39 @@ async function qStopCam(){
    CAT holds the product objects renderNameResults already expects; CATHAY is a parallel array
    of their lowercased "brand item sku", built once so a keystroke lowercases nothing. */
 let CAT = null, CATHAY = null, CATV = '';
-let catDb = null, catBusy = false, catFails = 0, catNoApi = false;
+let catDb = null, catBusy = false, catFails = 0, catNoApi = false, catPending = false;
 const CAT_RECHECK_MS = 3600e3;        // how often a returning user pays for a catalogver call
 const CAT_HITS = 200;                 // enough candidates for rankProducts to choose 30 from
+
+/**
+ * Wi-Fi only, because this is ~2MB and the people using it are in shops on mobile data.
+ * true = Wi-Fi (or wired), false = mobile data or the phone asking us to save data,
+ * null = the phone won't say — which is EVERY iPhone: Safari implements no part of the
+ * Network Information API. Guessing from effectiveType would be wrong (fast 5G reads as the
+ * same "4g" as Wi-Fi), so "unknown" stays unknown and the download waits for a tap instead.
+ */
+function wifiState(){
+  const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (!c) return null;
+  if (c.saveData) return false;
+  if (typeof c.type === 'string' && c.type) return c.type === 'wifi' || c.type === 'ethernet';
+  return null;
+}
+
+/** The one line of UI this feature has: shown only when a download is waiting on the user,
+ *  hidden the moment it is not. Tapping it downloads over whatever connection they have —
+ *  an explicit tap is consent, which is the whole point of not doing it automatically. */
+function renderCatLine(state){
+  const el = $('catLine');
+  if (!el) return;
+  if (!state) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  el.disabled = state === 'busy';
+  el.textContent = state === 'busy'
+    ? 'กำลังดาวน์โหลดรายการสินค้า…'
+    : (CAT ? 'มีรายการสินค้าใหม่ — แตะเพื่ออัปเดต (ประมาณ 2 MB, ควรต่อ Wi-Fi)'
+           : 'ดาวน์โหลดรายการสินค้าเพื่อค้นหาเร็วขึ้นและใช้ได้ตอนไม่มีสัญญาณ (ประมาณ 2 MB, ควรต่อ Wi-Fi)');
+}
 
 // Same guarded pattern as viewer.html: an unresolved indexedDB promise once hung that page
 // forever, so every await carries a timeout and every failure resolves to a fallback.
@@ -993,17 +1030,23 @@ async function catalogBoot(){
 /** Brings the local copy up to date. With no copy, goes straight to the download (a version
     call first would only add ~1.7s). A failure is counted, not retried here: the next
     visibility change gets one more go, and catFails >= 2 stops it for the session. */
-async function catalogCheck(){
-  if (!catDb || catBusy || catNoApi || catFails >= 2) return;
-  if (CAT && Date.now() - ls.get('ps_catchk', 0) < CAT_RECHECK_MS) return;
+async function catalogCheck(force){
+  if (!catDb || catBusy || catNoApi || (catFails >= 2 && !force)) return;
+  if (!force && CAT && Date.now() - ls.get('ps_catchk', 0) < CAT_RECHECK_MS) return;
   catBusy = true;
+  renderCatLine(catPending || !CAT ? 'busy' : null);
   try {
     if (CAT) {
+      // The version check is a few hundred bytes — worth doing on any connection, since it is
+      // what tells us whether to bother the user about a download at all.
       const vd = await api('?action=catalogver');
       if (!vd.ok) { catFails++; return; }
       if (!vd.v) { catNoApi = true; return; }           // old backend: no such endpoint
-      if (String(vd.v) === CATV) { ls.set('ps_catchk', Date.now()); return; }
+      if (String(vd.v) === CATV) { ls.set('ps_catchk', Date.now()); catPending = false; return; }
     }
+    // Only the ~2MB download itself waits for Wi-Fi. On mobile data (or an iPhone, which never
+    // tells us), nothing is fetched until the user taps the line above.
+    if (!force && wifiState() !== true) { catPending = true; return; }
     const d = await api('?action=catalog');
     if (!d.ok) { catFails++; return; }
     if (!Array.isArray(d.p) || !Array.isArray(d.brands) || !d.v) { catNoApi = true; return; }
@@ -1011,9 +1054,13 @@ async function catalogCheck(){
     if (!items.length) { catNoApi = true; return; }
     catalogSwap(String(d.v), items);
     ls.set('ps_catchk', Date.now());
+    catPending = false;
     if (!await catIdb('readwrite', { v: CATV, p: CAT })) ls.set('ps_catnostore', Date.now());
   } catch(e) { catFails++; }
-  finally { catBusy = false; }
+  finally {
+    catBusy = false;
+    renderCatLine(catPending ? 'offer' : null);
+  }
 }
 
 /** AND of whitespace-separated tokens over brand+item+sku — psearch()'s rule — in catalog
@@ -1425,6 +1472,17 @@ function init(){
 }
 init();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) catalogCheck(); });
+// A tap is explicit consent, so it downloads whatever the connection is — and it is the only
+// way an iPhone ever gets the catalog, since Safari never reports Wi-Fi.
+$('catLine').addEventListener('click', () => catalogCheck(true));
+// Android tells us when the connection changes; arriving on Wi-Fi with a download waiting is
+// exactly when to do it without asking.
+(function(){
+  const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (c && typeof c.addEventListener === 'function') {
+    c.addEventListener('change', () => { if (catPending && wifiState() === true) catalogCheck(); });
+  }
+})();
 
 // Registered on load, not at parse time, so it never competes with the app becoming
 // interactive; failure is silent because a shop with no signal is exactly the case where
