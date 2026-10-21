@@ -105,6 +105,7 @@ function onOpen() {
     .addItem("เติมรหัสร้านที่ยังว่าง", "fillMissingStoreIds")
     .addItem("ตั้งรหัสแอดมิน", "runSetAdminKey")
     .addItem("ตั้งรหัสแอดมินจากแท็บ Setup", "setAdminKeyFromSetupTab")
+    .addItem("ล้างการล็อกรหัสผิด", "clearLoginLockouts")
     .addItem("ออกจากระบบทุกเครื่อง", "runLogoutEverywhere")
     .addToUi();
 }
@@ -224,6 +225,29 @@ function setAdminKeyFromSetupTab() {
   storeAdminKey(key);
   cell.clearContent();   // never leave the key readable in the Sheet
   toastOrLog("ตั้งรหัสแอดมินเรียบร้อยแล้ว — ล้างช่อง B1 ให้แล้ว ใช้รหัสนี้เข้าหน้าแอดมินได้เลย");
+}
+
+/**
+ * Clears the "too many wrong attempts" lockouts — the admin key's, and every user's login and
+ * reset-code counters. Run from the editor or the menu when someone is locked out and waiting
+ * out the window (15 min for a password or key, 6h for a reset code) is not acceptable.
+ *
+ * Changing the admin key does NOT clear its lockout: the counter is keyed on the attempt, not
+ * on the key, so without this the new key is refused for the rest of the window — which is
+ * exactly when someone has just set a new one because they forgot the old.
+ *
+ * Nothing here weakens the limit itself; it only resets the counters, and only someone who can
+ * already open this Sheet's script can do it.
+ */
+function clearLoginLockouts() {
+  const cache = CacheService.getScriptCache();
+  const keys = ["af"];                       // the admin key's global counter
+  try {
+    const users = getUsersMap(true);
+    Object.keys(users).forEach(function (id) { keys.push("lf:" + id, "rf:" + id); });
+  } catch (err) { /* no Users tab yet: the admin counter is still worth clearing */ }
+  cache.removeAll(keys);
+  toastOrLog("ล้างการล็อกจากการใส่รหัสผิดแล้ว — ลองเข้าสู่ระบบได้ทันที");
 }
 
 /** Menu entry point: confirms, then deletes every viewer and admin session. */
