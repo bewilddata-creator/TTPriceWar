@@ -105,6 +105,8 @@ function onOpen() {
     .addItem("เติมรหัสร้านที่ยังว่าง", "fillMissingStoreIds")
     .addItem("ตั้งรหัสแอดมิน", "runSetAdminKey")
     .addItem("ตั้งรหัสแอดมินจากแท็บ Setup", "setAdminKeyFromSetupTab")
+    .addItem("ล้างแคชหลังแก้ชีตเอง", "refreshAfterSheetEdit")
+    .addItem("ตรวจรหัสร้านในข้อมูลราคา", "checkStoreLinks")
     .addItem("ล้างการล็อกรหัสผิด", "clearLoginLockouts")
     .addItem("ออกจากระบบทุกเครื่อง", "runLogoutEverywhere")
     .addToUi();
@@ -248,6 +250,58 @@ function clearLoginLockouts() {
   } catch (err) { /* no Users tab yet: the admin counter is still worth clearing */ }
   cache.removeAll(keys);
   toastOrLog("ล้างการล็อกจากการใส่รหัสผิดแล้ว — ลองเข้าสู่ระบบได้ทันที");
+}
+
+/**
+ * Run after editing Products or Stores BY HAND in the Sheet. Every served list is cached behind
+ * a version counter that only the app's own writes bump, so a hand edit is invisible until the
+ * cache expires — up to 10 minutes for the store list, 6 hours for a product's prices (which
+ * embed store names, so renaming a store makes them wrong, not just stale).
+ *
+ * Does NOT rebuild the analysis payload: that is the separate, slower "อัปเดตข้อมูลวิเคราะห์",
+ * and the viewer keeps serving the last build until it runs.
+ */
+function refreshAfterSheetEdit() {
+  bumpDataVersion("p");
+  bumpDataVersion("s");
+  CacheService.getScriptCache().remove("vocab");
+  toastOrLog("ล้างแคชแล้ว — หน้าแอดมินและมือถือจะเห็นข้อมูลใหม่ทันที\n"
+    + "ถ้าแก้ข้อมูลที่หน้าวิเคราะห์ใช้ด้วย ให้กด \"อัปเดตข้อมูลวิเคราะห์\" ต่อ");
+}
+
+/**
+ * Reports observations and ทุนส่ง rows whose store_id matches no row in Stores. Such rows are
+ * dropped from the analysis SILENTLY (see buildAnalysis) and show the raw id instead of a shop
+ * name everywhere else — which is exactly what renaming a store_id by hand causes if the other
+ * tabs are not renamed to match. Read-only: it reports, it never rewrites anything.
+ */
+function checkStoreLinks() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const st = ss.getSheetByName("Stores");
+  const known = {};
+  if (st.getLastRow() > 1) {
+    st.getRange(2, 1, st.getLastRow() - 1, 1).getValues()
+      .forEach(function (r) { const id = String(r[0] || "").trim(); if (id) known[id] = true; });
+  }
+
+  const report = [];
+  [["Observations", 3], ["Tunsong", 3]].forEach(function (pair) {
+    const sh = ss.getSheetByName(pair[0]);
+    const last = sh ? sh.getLastRow() : 0;
+    if (last < 2) return;
+    const counts = {};
+    let orphans = 0;
+    sh.getRange(2, pair[1], last - 1, 1).getValues().forEach(function (r) {
+      const id = String(r[0] || "").trim();
+      if (!id || known[id]) return;
+      counts[id] = (counts[id] || 0) + 1;
+      orphans++;
+    });
+    report.push(pair[0] + ": " + (orphans
+      ? orphans + " แถวที่รหัสร้านไม่ตรงกับชีต Stores — " + JSON.stringify(counts)
+      : "ทุกแถวตรงกับชีต Stores"));
+  });
+  toastOrLog(report.join("\n"));
 }
 
 /** Menu entry point: confirms, then deletes every viewer and admin session. */
@@ -447,7 +501,9 @@ function lookup(barcode) {
 function pricesEndpoint(barcode) {
   if (!barcode) return json({ ok: true, prices: [] });
   const cache = CacheService.getScriptCache();
-  const ck = "pr:" + normBarcode(barcode);
+  // Keyed on the store data version as well as the barcode: these payloads embed store NAMES,
+  // so editing the Stores tab makes every one of them wrong, and at 6h nobody would wait it out.
+  const ck = "pr:v" + dataVersion("s") + ":" + normBarcode(barcode);
   const hit = cache.get(ck);
   if (hit) return ContentService.createTextOutput(hit).setMimeType(ContentService.MimeType.JSON);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -507,7 +563,7 @@ function pricesFor(ss, forms) {
 function tunsongEndpoint(barcode) {
   if (!barcode) return json({ ok: true, t: [] });
   const cache = CacheService.getScriptCache();
-  const ck = "tn:" + normBarcode(barcode);
+  const ck = "tn:v" + dataVersion("s") + ":" + normBarcode(barcode);   // see pricesEndpoint
   const hit = cache.get(ck);
   if (hit) return ContentService.createTextOutput(hit).setMimeType(ContentService.MimeType.JSON);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1860,7 +1916,7 @@ function writeOne(ss, d, ctx) {
     ctxRecentIds(ctx).push(id);
     ctx.cache.put("obs:" + id, "1", OBS_CACHE_SEC);
     // The cached prices for this product are now wrong — and they are cached for 6h.
-    ctx.cache.remove("pr:" + normBarcode(d.barcode));
+    ctx.cache.remove("pr:v" + dataVersion("s") + ":" + normBarcode(d.barcode));
     return { id: id, status: "written", store_id: canonicalStore || undefined };
   }
 
@@ -1870,7 +1926,7 @@ function writeOne(ss, d, ctx) {
       "'" + String(d.barcode || ""), d.price, d.info_source || "",
       d.confidence || "", d.notes || ""]);
     // Otherwise the viewer keeps serving the pre-write ทุนส่ง for up to 10 minutes.
-    CacheService.getScriptCache().remove("tn:" + normBarcode(d.barcode));
+    CacheService.getScriptCache().remove("tn:v" + dataVersion("s") + ":" + normBarcode(d.barcode));
     return { id: tid, status: "written" };
   }
 
